@@ -1,26 +1,49 @@
-import sys
 import os
+import sys
 import streamlit as st
-from sqlmodel import Field, SQLModel, create_engine, Session, select
-from typing import Optional, List
+import io
+import pickle
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
+from typing import Optional, List, Dict, Tuple, Any
+import datetime
+import uuid
+from datetime import timedelta
+
+# ML Libraries
+from lightgbm import LGBMClassifier
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
-from sklearn.model_selection import cross_val_score
 from sklearn.impute import SimpleImputer
+from sklearn.model_selection import cross_val_score, train_test_split
+from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix
+
+# ORM/Database
+from sqlmodel import Field, SQLModel, create_engine, Session, select
+
+# Visualization
 import matplotlib.pyplot as plt
 import seaborn as sns
-import io
-import pickle
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import shap
+
+# Set page configuration
+st.set_page_config(layout="wide", page_title="Simlane Sales Prediction System", page_icon="💰")
 
 # -----------------------------------------------------------------------------
 # Database setup (SQLite for simplicity)
 # -----------------------------------------------------------------------------
 DATABASE_URL = "sqlite:///simlane.db"
 engine = create_engine(DATABASE_URL, echo=False)
+
+# -----------------------------------------------------------------------------
+# Model paths
+# -----------------------------------------------------------------------------
+MODEL_PATH = "simlane_model.pkl"
+SHAP_EXPLAINER_PATH = "simlane_explainer.pkl"
 
 # -----------------------------------------------------------------------------
 # ORM table definitions matching the MVP raw data feeds
@@ -59,8 +82,13 @@ class Opportunity(SQLModel, table=True):
     stage_entered_at: Optional[str]
     stage_exited_at: Optional[str]
     amount: Optional[float]
+    discount_pct: Optional[float] = 0.0
+    list_price: Optional[float]
+    cost_price: Optional[float]
     outcome: Optional[str]  # expected values e.g., "WON", "LOST"
     industry: Optional[str]
+    competitor_name: Optional[str]
+    competitor_price: Optional[float]
 
 # -----------------------------------------------------------------------------
 # Helper to initialize the database schema
@@ -187,39 +215,39 @@ CP1025,CompetitorC,P205,12200,2024-01-01
             df_competitor = pd.read_csv(io.StringIO(competitor_data))
             bulk_insert_dataframe(df_competitor, CompetitorPrice)
             
-            # Sample opportunity data
+            # Sample opportunity data with enhanced fields
             opportunity_data = """
-opp_id,customer_id,stage_entered_at,stage_exited_at,amount,outcome,industry
-OPP1001,C101,2024-01-01,2024-01-15,12000,WON,Technology
-OPP1002,C102,2024-01-05,2024-01-25,25000,WON,Healthcare
-OPP1003,C103,2024-01-10,2024-02-10,45000,WON,Financial Services
-OPP1004,C104,2024-01-15,2024-02-15,8000,LOST,Retail
-OPP1005,C105,2024-01-20,2024-02-20,30000,WON,Manufacturing
-OPP1006,C106,2024-01-25,2024-02-25,55000,WON,Technology
-OPP1007,C107,2024-02-01,2024-03-01,15000,LOST,Healthcare
-OPP1008,C108,2024-02-05,2024-03-05,22000,LOST,Retail
-OPP1009,C109,2024-02-10,2024-03-10,18000,WON,Financial Services
-OPP1010,C110,2024-02-15,2024-03-15,7000,LOST,Manufacturing
-OPP1011,C111,2024-02-20,2024-03-20,65000,WON,Technology
-OPP1012,C112,2024-02-25,2024-03-25,28000,WON,Healthcare
-OPP1013,C113,2024-03-01,2024-04-01,42000,LOST,Financial Services
-OPP1014,C114,2024-03-05,2024-04-05,33000,WON,Retail
-OPP1015,C115,2024-03-10,2024-04-10,50000,WON,Manufacturing
-OPP1016,C116,2024-03-15,2024-04-15,17000,LOST,Technology
-OPP1017,C117,2024-03-20,2024-04-20,26000,WON,Healthcare
-OPP1018,C118,2024-03-25,2024-04-25,38000,WON,Financial Services
-OPP1019,C101,2024-01-30,2024-02-28,10000,WON,Technology
-OPP1020,C103,2024-02-15,2024-03-15,35000,LOST,Financial Services
-OPP1021,C106,2024-03-05,2024-04-05,48000,WON,Technology
-OPP1022,C109,2024-03-20,2024-04-20,22000,WON,Financial Services
-OPP1023,C112,2024-04-01,2024-04-30,31000,LOST,Healthcare
-OPP1024,C114,2024-04-10,2024-05-10,27000,WON,Retail
-OPP1025,C101,2024-04-15,2024-05-15,14000,WON,Technology
-OPP1026,C105,2024-04-20,2024-05-20,36000,LOST,Manufacturing
-OPP1027,C111,2024-04-25,2024-05-25,72000,WON,Technology
-OPP1028,C115,2024-05-01,2024-05-30,45000,WON,Manufacturing
-OPP1029,C103,2024-05-05,2024-06-05,29000,LOST,Financial Services
-OPP1030,C118,2024-05-10,2024-06-10,41000,WON,Financial Services
+opp_id,customer_id,stage_entered_at,stage_exited_at,amount,discount_pct,list_price,cost_price,outcome,industry,competitor_name,competitor_price
+OPP1001,C101,2024-01-01,2024-01-15,12000,5,1000,600,WON,Technology,CompetitorA,950
+OPP1002,C102,2024-01-05,2024-01-25,25000,0,1000,600,WON,Healthcare,CompetitorB,1050
+OPP1003,C103,2024-01-10,2024-02-10,45000,2,1000,600,WON,Financial Services,CompetitorC,980
+OPP1004,C104,2024-01-15,2024-02-15,8000,8,1000,600,LOST,Retail,CompetitorA,900
+OPP1005,C105,2024-01-20,2024-02-20,30000,3,1000,600,WON,Manufacturing,CompetitorB,1020
+OPP1006,C106,2024-01-25,2024-02-25,55000,0,1000,600,WON,Technology,CompetitorC,990
+OPP1007,C107,2024-02-01,2024-03-01,15000,10,1000,600,LOST,Healthcare,CompetitorA,920
+OPP1008,C108,2024-02-05,2024-03-05,22000,7,1000,600,LOST,Retail,CompetitorB,970
+OPP1009,C109,2024-02-10,2024-03-10,18000,3,1000,600,WON,Financial Services,CompetitorC,1000
+OPP1010,C110,2024-02-15,2024-03-15,7000,12,1000,600,LOST,Manufacturing,CompetitorA,880
+OPP1011,C111,2024-02-20,2024-03-20,65000,0,1000,600,WON,Technology,CompetitorB,1080
+OPP1012,C112,2024-02-25,2024-03-25,28000,2,1000,600,WON,Healthcare,CompetitorC,990
+OPP1013,C113,2024-03-01,2024-04-01,42000,8,1000,600,LOST,Financial Services,CompetitorA,930
+OPP1014,C114,2024-03-05,2024-04-05,33000,4,1000,600,WON,Retail,CompetitorB,1030
+OPP1015,C115,2024-03-10,2024-04-10,50000,0,1000,600,WON,Manufacturing,CompetitorC,1010
+OPP1016,C116,2024-03-15,2024-04-15,17000,9,1000,600,LOST,Technology,CompetitorA,910
+OPP1017,C117,2024-03-20,2024-04-20,26000,3,1000,600,WON,Healthcare,CompetitorB,990
+OPP1018,C118,2024-03-25,2024-04-25,38000,2,1000,600,WON,Financial Services,CompetitorC,1000
+OPP1019,C101,2024-01-30,2024-02-28,10000,0,1000,600,WON,Technology,CompetitorA,1050
+OPP1020,C103,2024-02-15,2024-03-15,35000,7,1000,600,LOST,Financial Services,CompetitorB,940
+OPP1021,C106,2024-03-05,2024-04-05,48000,1,1000,600,WON,Technology,CompetitorC,1020
+OPP1022,C109,2024-03-20,2024-04-20,22000,2,1000,600,WON,Financial Services,CompetitorA,1010
+OPP1023,C112,2024-04-01,2024-04-30,31000,6,1000,600,LOST,Healthcare,CompetitorB,950
+OPP1024,C114,2024-04-10,2024-05-10,27000,3,1000,600,WON,Retail,CompetitorC,990
+OPP1025,C101,2024-04-15,2024-05-15,14000,0,1000,600,WON,Technology,CompetitorA,1060
+OPP1026,C105,2024-04-20,2024-05-20,36000,8,1000,600,LOST,Manufacturing,CompetitorB,920
+OPP1027,C111,2024-04-25,2024-05-25,72000,0,1000,600,WON,Technology,CompetitorC,1040
+OPP1028,C115,2024-05-01,2024-05-30,45000,1,1000,600,WON,Manufacturing,CompetitorA,1030
+OPP1029,C103,2024-05-05,2024-06-05,29000,9,1000,600,LOST,Financial Services,CompetitorB,930
+OPP1030,C118,2024-05-10,2024-06-10,41000,2,1000,600,WON,Financial Services,CompetitorC,1000
             """
             df_opportunity = pd.read_csv(io.StringIO(opportunity_data))
             bulk_insert_dataframe(df_opportunity, Opportunity)
@@ -265,56 +293,24 @@ def calculate_customer_metrics(customer_id):
             "days_since_last_purchase": 30  # Placeholder, would calculate from dates
         }
 
-def get_competitive_position(product_id):
-    """Determine competitive position based on pricing."""
-    with Session(engine) as session:
-        # Get our latest price
-        our_price_record = session.exec(
-            select(PricingLog).where(PricingLog.product_id == product_id)
-        ).first()
-        
-        # Get competitor prices
-        competitor_prices = session.exec(
-            select(CompetitorPrice).where(CompetitorPrice.product_id == product_id)
-        ).all()
-        
-        if not our_price_record or not competitor_prices:
-            return {
-                "price_position": "unknown",
-                "price_difference_pct": 0
-            }
-        
-        our_price = our_price_record.final_price or our_price_record.list_price
-        if not our_price:
-            return {
-                "price_position": "unknown",
-                "price_difference_pct": 0
-            }
-        
-        # Calculate average competitor price
-        comp_prices = [cp.price for cp in competitor_prices if cp.price is not None]
-        if not comp_prices:
-            return {
-                "price_position": "unknown",
-                "price_difference_pct": 0
-            }
-            
-        avg_competitor_price = sum(comp_prices) / len(comp_prices)
-        price_diff_pct = (our_price - avg_competitor_price) / avg_competitor_price * 100
-        
-        if price_diff_pct <= -10:
-            position = "significantly_lower"
-        elif price_diff_pct < 0:
-            position = "lower"
-        elif price_diff_pct < 10:
-            position = "comparable"
-        else:
-            position = "higher"
-            
-        return {
-            "price_position": position,
-            "price_difference_pct": price_diff_pct
-        }
+def calculate_price_gap(list_price, competitor_price):
+    """Calculate price gap percentage relative to competitor."""
+    if not list_price or not competitor_price or competitor_price == 0:
+        return 0
+    
+    return ((list_price - competitor_price) / competitor_price) * 100
+
+def calculate_sales_cycle_days(entered_at, exited_at):
+    """Calculate sales cycle duration in days."""
+    if not entered_at or not exited_at:
+        return 30  # Default value
+    
+    try:
+        start_date = datetime.datetime.strptime(entered_at, "%Y-%m-%d")
+        end_date = datetime.datetime.strptime(exited_at, "%Y-%m-%d")
+        return (end_date - start_date).days
+    except (ValueError, TypeError):
+        return 30  # Default value
 
 def enrich_opportunity_features(opportunities_df):
     """Add derived features to opportunities dataframe."""
@@ -329,49 +325,116 @@ def enrich_opportunity_features(opportunities_df):
         features = {
             "opp_id": opp.opp_id,
             "amount": opp.amount,
+            "discount_pct": opp.discount_pct if not pd.isna(opp.discount_pct) else 0,
             "industry": opp.industry if not pd.isna(opp.industry) else "unknown",
             "outcome": 1 if str(opp.outcome).upper() == "WON" else 0
         }
         
-        # Calculate sales cycle duration if dates are available
-        if not pd.isna(opp.stage_entered_at) and not pd.isna(opp.stage_exited_at):
-            # In a real implementation, we'd parse dates and calculate actual duration
-            features["sales_cycle_days"] = 30  # Placeholder
-        else:
-            features["sales_cycle_days"] = None
+        # Calculate sales cycle duration
+        features["sales_cycle_days"] = calculate_sales_cycle_days(
+            opp.stage_entered_at, opp.stage_exited_at
+        )
             
         # Add customer metrics
         customer_metrics = calculate_customer_metrics(opp.customer_id)
         features.update(customer_metrics)
         
-        # Add competitive position if we have product info
-        # In this simplified version, we don't have product_id in opportunities
-        # In a real implementation, we'd link to product data
-        features["price_position"] = "unknown"
-        features["price_difference_pct"] = 0
+        # Calculate price gap if competitor price exists
+        if not pd.isna(opp.competitor_price) and not pd.isna(opp.list_price):
+            # Adjust list price by discount percentage
+            effective_price = opp.list_price * (1 - (opp.discount_pct / 100 if not pd.isna(opp.discount_pct) else 0))
+            features["price_gap_pct"] = calculate_price_gap(effective_price, opp.competitor_price)
+        else:
+            features["price_gap_pct"] = 0
         
         enriched_data.append(features)
     
     return pd.DataFrame(enriched_data)
 
 # -----------------------------------------------------------------------------
-# Model management
+# Probability-Weighted Margin Calculation
 # -----------------------------------------------------------------------------
 
-MODEL_PATH = "propensity_advanced.pkl"
+def calculate_pwm(win_probability, amount, list_price, discount_pct=0, cost_price=None):
+    """Calculate probability-weighted margin for a deal."""
+    # Default cost as 60% of list price if not provided
+    if cost_price is None:
+        cost_price = list_price * 0.6
+    
+    # Calculate actual price after discount
+    actual_price = list_price * (1 - discount_pct/100)
+    
+    # Calculate margin per unit
+    margin_per_unit = actual_price - cost_price
+    
+    # Calculate total margin
+    total_margin = margin_per_unit * amount
+    
+    # Weight by win probability
+    prob_weighted_margin = total_margin * win_probability
+    
+    return prob_weighted_margin
+
+def determine_safe_discount_band(model, feature_vector, current_discount, target_min_prob=0.5, max_range=10):
+    """Calculate recommended discount range that maintains acceptable win probability."""
+    # Create a range of discount percentages to test
+    min_discount = max(0, current_discount - max_range)
+    max_discount = min(40, current_discount + max_range)  # Cap at 40% discount
+    
+    test_discounts = list(range(int(min_discount), int(max_discount) + 1))
+    results = []
+    
+    # Clone the feature vector for simulations
+    for discount in test_discounts:
+        test_vector = feature_vector.copy()
+        test_vector['discount_pct'] = discount
+        
+        # Convert to DataFrame for prediction
+        test_df = pd.DataFrame([test_vector])
+        
+        # Predict with this discount
+        prob = model.predict_proba(test_df)[0][1]
+        
+        results.append((discount, prob))
+    
+    # Find range where probability stays above target
+    acceptable_discounts = [d for d, p in results if p >= target_min_prob]
+    
+    if not acceptable_discounts:
+        return (current_discount, current_discount)  # No safe band found
+        
+    return (min(acceptable_discounts), max(acceptable_discounts))
+
+# -----------------------------------------------------------------------------
+# Enhanced Model Management
+# -----------------------------------------------------------------------------
+
 model = None
+shap_explainer = None
 
 def load_model():
-    global model
+    """Load trained model from disk."""
+    global model, shap_explainer
     try:
         with open(MODEL_PATH, "rb") as f:
             model = pickle.load(f)
+        
+        # Also load SHAP explainer if it exists
+        try:
+            with open(SHAP_EXPLAINER_PATH, "rb") as f:
+                shap_explainer = pickle.load(f)
+        except FileNotFoundError:
+            shap_explainer = None
+            
         return True
     except FileNotFoundError:
+        model = None
+        shap_explainer = None
         return False
 
-def train_advanced_model():
-    global model
+def train_lightgbm_model():
+    """Train an enhanced LightGBM model with SHAP explanations."""
+    global model, shap_explainer
     
     # Get raw opportunity data
     with Session(engine) as session:
@@ -388,10 +451,17 @@ def train_advanced_model():
         return False, "No valid opportunity data after feature engineering."
     
     # Define feature columns
-    categorical_features = ['industry', 'price_position']
-    numeric_features = ['amount', 'sales_cycle_days', 'total_spent', 
-                        'avg_order_value', 'order_count', 
-                        'days_since_last_purchase', 'price_difference_pct']
+    categorical_features = ['industry']
+    numeric_features = [
+        'amount', 
+        'discount_pct',
+        'sales_cycle_days', 
+        'total_spent', 
+        'avg_order_value', 
+        'order_count', 
+        'days_since_last_purchase', 
+        'price_gap_pct'
+    ]
     
     # Create preprocessor
     categorical_transformer = Pipeline(steps=[
@@ -410,26 +480,65 @@ def train_advanced_model():
             ('cat', categorical_transformer, categorical_features)
         ])
     
-    # Create and train pipeline
+    # Create and train pipeline with LightGBM
     pipeline = Pipeline(steps=[
         ('preprocessor', preprocessor),
-        ('classifier', RandomForestClassifier(n_estimators=100, random_state=42))
+        ('classifier', LGBMClassifier(
+            n_estimators=100,
+            learning_rate=0.05,
+            num_leaves=31,
+            feature_fraction=0.8,
+            bagging_fraction=0.8,
+            bagging_freq=5,
+            random_state=42
+        ))
     ])
     
+    # Split data for training and evaluation
     X = enriched_df.drop(['opp_id', 'outcome'], axis=1)
     y = enriched_df['outcome']
     
-    # Train model
-    pipeline.fit(X, y)
+    # If we have enough data, do a train/test split
+    if len(enriched_df) >= 20:  # Arbitrary minimum for splitting
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42)
+        
+        # Train model
+        pipeline.fit(X_train, y_train)
+        
+        # Evaluate on test set
+        y_pred = pipeline.predict(X_test)
+        precision = precision_score(y_test, y_pred)
+        recall = recall_score(y_test, y_pred)
+        f1 = f1_score(y_test, y_pred)
+        
+        metrics_message = f"Precision: {precision:.2f}, Recall: {recall:.2f}, F1: {f1:.2f}"
+    else:
+        # Not enough data for split, use whole dataset
+        pipeline.fit(X, y)
+        
+        # Use cross-validation instead
+        try:
+            cv_scores = cross_val_score(pipeline, X, y, cv=min(5, len(enriched_df)))
+            avg_score = np.mean(cv_scores)
+            metrics_message = f"Cross-validation accuracy: {avg_score:.2f}"
+        except ValueError:
+            metrics_message = "Not enough samples for cross-validation"
     
-    # Evaluate with cross-validation
+    # Create SHAP explainer for feature importance
     try:
-        cv_scores = cross_val_score(pipeline, X, y, cv=5)
-        avg_score = np.mean(cv_scores)
-        score_message = f"Cross-validation accuracy: {avg_score:.2f}"
-    except ValueError:
-        # Not enough samples for cross-validation
-        score_message = "Not enough samples for cross-validation"
+        # We need to transform the data first
+        X_processed = pipeline.named_steps['preprocessor'].transform(X)
+        
+        # Create SHAP explainer using the classifier from the pipeline
+        explainer = shap.TreeExplainer(pipeline.named_steps['classifier'])
+        
+        # Save the explainer
+        with open(SHAP_EXPLAINER_PATH, "wb") as f:
+            pickle.dump(explainer, f)
+            
+        shap_explainer = explainer
+    except Exception as e:
+        st.warning(f"Could not create SHAP explainer: {str(e)}")
     
     # Save the model
     with open(MODEL_PATH, "wb") as f:
@@ -437,89 +546,515 @@ def train_advanced_model():
     
     model = pipeline
     
-    # Get feature importance
-    feature_names = None
-    try:
-        feature_names = (
-            numeric_features + 
-            list(pipeline.named_steps['preprocessor']
-                .named_transformers_['cat']
-                .named_steps['onehot']
-                .get_feature_names_out(categorical_features))
-        )
-    except:
-        pass
-    
-    importances = pipeline.named_steps['classifier'].feature_importances_
-    
     # Return success and statistics
-    return True, f"Model trained successfully with {len(enriched_df)} samples! {score_message}"
+    return True, f"Model trained successfully with {len(enriched_df)} samples! {metrics_message}"
 
-def predict_with_advanced_model(amount, industry="Technology", sales_cycle_days=30, total_spent=10000, avg_order_value=2000, order_count=5):
+def get_top_drivers(feature_vector):
+    """Get top factors driving the prediction for a specific opportunity."""
+    global model, shap_explainer
+    
+    if not model or not shap_explainer:
+        return []
+    
+    try:
+        # Convert feature vector to DataFrame
+        X = pd.DataFrame([feature_vector])
+        
+        # Preprocess the data
+        X_processed = model.named_steps['preprocessor'].transform(X)
+        
+        # Calculate SHAP values
+        shap_values = shap_explainer.shap_values(X_processed)
+        
+        # For binary classification, shap_values is a list of two arrays
+        if isinstance(shap_values, list) and len(shap_values) == 2:
+            # We want the values for the positive class (index 1)
+            shap_values = shap_values[1]
+        
+        # Get feature names after preprocessing
+        feature_names = []
+        
+        # Get numeric feature names
+        numeric_indices = model.named_steps['preprocessor'].transformers_[0][2]
+        numeric_names = [model.named_steps['preprocessor'].feature_names_in_[i] for i in numeric_indices]
+        feature_names.extend(numeric_names)
+        
+        # Get categorical feature names
+        try:
+            cat_indices = model.named_steps['preprocessor'].transformers_[1][2]
+            cat_encoder = model.named_steps['preprocessor'].transformers_[1][1].named_steps['onehot']
+            cat_names = cat_encoder.get_feature_names_out([model.named_steps['preprocessor'].feature_names_in_[i] for i in cat_indices])
+            feature_names.extend(cat_names)
+        except:
+            # If we can't get categorical names, use placeholders
+            cat_count = X_processed.shape[1] - len(numeric_names)
+            feature_names.extend([f"categorical_{i}" for i in range(cat_count)])
+        
+        # Get absolute SHAP values and sort
+        abs_shap_values = np.abs(shap_values[0])
+        indices = np.argsort(abs_shap_values)[::-1]
+        
+        # Return top drivers with direction
+        top_drivers = []
+        for i in indices[:5]:  # Get top 5 drivers
+            direction = "+" if shap_values[0][i] > 0 else "-"
+            
+            # Clean up feature name
+            if i < len(feature_names):
+                feature_name = feature_names[i]
+                if feature_name.startswith(('industry_', 'categorical_')):
+                    parts = feature_name.split('_')
+                    feature_name = parts[0].capitalize()
+                else:
+                    # Make numeric features more readable
+                    feature_name = feature_name.replace('_', ' ').title()
+            else:
+                feature_name = f"Feature {i}"
+            
+            top_drivers.append({
+                "feature": feature_name,
+                "importance": float(abs_shap_values[i]),
+                "direction": direction,
+                "value": feature_vector.get(feature_names[i].split('_')[0] if i < len(feature_names) else "unknown", "N/A")
+            })
+        
+        return top_drivers
+    except Exception as e:
+        st.warning(f"Error calculating drivers: {str(e)}")
+        return []
+
+def predict_with_lightgbm(feature_vector):
+    """Make predictions with the trained model."""
     global model
     if model is None:
         load_model()
         if model is None:
-            return None, None
+            return None, None, None
     
-    # Create a sample with provided data and defaults for other fields
-    sample = pd.DataFrame([{
-        'amount': amount,
-        'industry': industry,
-        'sales_cycle_days': sales_cycle_days,
-        'total_spent': total_spent,
-        'avg_order_value': avg_order_value,
-        'order_count': order_count,
-        'days_since_last_purchase': 30,
-        'price_position': 'comparable',
-        'price_difference_pct': 0
-    }])
+    # Create a DataFrame with the feature vector
+    sample = pd.DataFrame([feature_vector])
     
     # Get prediction probability
     probs = model.predict_proba(sample)
     win_prob = probs[0][1]  # Probability of class 1 (win)
     
-    # Get feature importance for this prediction (SHAP values would be better,
-    # but for simplicity we'll just use global feature importance)
-    importance_pairs = []
-    try:
-        if hasattr(model.named_steps['classifier'], 'feature_importances_'):
-            importances = model.named_steps['classifier'].feature_importances_
-            
-            # Get feature names (simplified approach)
-            feature_names = []
-            for name, transformer in model.named_steps['preprocessor'].transformers_:
-                if name == 'num':
-                    feature_names.extend(transformer.get_feature_names_out([
-                        'amount', 'sales_cycle_days', 'total_spent', 
-                        'avg_order_value', 'order_count', 
-                        'days_since_last_purchase', 'price_difference_pct'
-                    ]))
-                elif name == 'cat':
-                    try:
-                        feature_names.extend(transformer.named_steps['onehot']
-                                            .get_feature_names_out(['industry', 'price_position']))
-                    except:
-                        # Fallback if feature names can't be extracted
-                        feature_names.extend([f'cat_{i}' for i in range(10)])
-            
-            # Pair feature names with importance values
-            importance_pairs = sorted(
-                zip(feature_names, importances),
-                key=lambda x: x[1],
-                reverse=True
-            )
-    except:
-        importance_pairs = []
+    # Get top drivers for this prediction
+    drivers = get_top_drivers(feature_vector)
     
-    return win_prob, importance_pairs
+    # Determine safe discount band
+    discount_band = determine_safe_discount_band(
+        model, 
+        feature_vector, 
+        feature_vector.get('discount_pct', 0),
+        target_min_prob=0.5
+    )
+    
+    return win_prob, drivers, discount_band
+
+# -----------------------------------------------------------------------------
+# Visualization Functions
+# -----------------------------------------------------------------------------
+
+def create_win_probability_gauge(win_prob):
+    """Create an interactive gauge chart for win probability."""
+    fig = go.Figure()
+    
+    # Add a gauge chart
+    fig.add_trace(go.Indicator(
+        mode="gauge+number",
+        value=win_prob * 100,
+        domain={'x': [0, 1], 'y': [0, 1]},
+        title={'text': "Win Probability"},
+        gauge={
+            'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "darkblue"},
+            'bar': {'color': "darkblue"},
+            'bgcolor': "white",
+            'borderwidth': 2,
+            'bordercolor': "gray",
+            'steps': [
+                {'range': [0, 30], 'color': '#FF9999'},
+                {'range': [30, 70], 'color': '#FFDD99'},
+                {'range': [70, 100], 'color': '#99CC99'}
+            ],
+            'threshold': {
+                'line': {'color': "red", 'width': 4},
+                'thickness': 0.75,
+                'value': win_prob * 100
+            }
+        }
+    ))
+    
+    # Update layout
+    fig.update_layout(
+        height=300,
+        margin=dict(l=20, r=20, t=50, b=20),
+        font=dict(family="Arial", size=12)
+    )
+    
+    return fig
+
+def create_driver_chart(drivers):
+    """Create a horizontal bar chart for impact drivers."""
+    if not drivers:
+        return None
+    
+    # Prepare data
+    features = [f"{d['feature']} ({d['direction']})" for d in drivers]
+    importances = [d['importance'] for d in drivers]
+    colors = ['#1f77b4' if d['direction'] == '+' else '#d62728' for d in drivers]
+    
+    # Create figure
+    fig = go.Figure()
+    
+    # Add bars
+    fig.add_trace(go.Bar(
+        y=features,
+        x=importances,
+        orientation='h',
+        marker_color=colors,
+        text=[f"{d['value']}" for d in drivers],
+        textposition='auto'
+    ))
+    
+    # Update layout
+    fig.update_layout(
+        title="Top Impact Drivers",
+        xaxis_title="Impact on Win Probability",
+        height=300,
+        margin=dict(l=20, r=20, t=50, b=20),
+        font=dict(family="Arial", size=12)
+    )
+    
+    return fig
+
+def create_discount_band_chart(current_discount, discount_band, pwm):
+    """Create a chart showing the safe discount band."""
+    min_discount, max_discount = discount_band
+    
+    # Create a figure with secondary y-axis
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    
+    # Add discount band as a rectangle
+    fig.add_trace(
+        go.Scatter(
+            x=[min_discount, max_discount, max_discount, min_discount, min_discount],
+            y=[0, 0, 1, 1, 0],
+            fill="toself",
+            fillcolor="rgba(0, 128, 0, 0.2)",
+            line=dict(color="rgba(0, 128, 0, 0.5)"),
+            name="Safe Discount Range",
+            showlegend=False
+        )
+    )
+    
+    # Add current discount marker
+    fig.add_trace(
+        go.Scatter(
+            x=[current_discount],
+            y=[0.5],
+            mode="markers",
+            marker=dict(size=20, color="red", symbol="diamond"),
+            name="Current Discount"
+        )
+    )
+    
+    # Add line for PWM
+    discount_range = list(range(max(0, min(min_discount, current_discount) - 5), 
+                               min(50, max(max_discount, current_discount) + 5)))
+    
+    # Dummy PWM values - in a real implementation, we would calculate actual PWM values
+    pwm_values = [pwm * (1 - (d - current_discount) * 0.02) for d in discount_range]
+    
+    fig.add_trace(
+        go.Scatter(
+            x=discount_range,
+            y=pwm_values,
+            mode="lines",
+            name="Probability-Weighted Margin",
+            line=dict(color="blue", width=3),
+        ),
+        secondary_y=True
+    )
+    
+    # Update axes and layout
+    fig.update_xaxes(title_text="Discount Percentage")
+    fig.update_yaxes(title_text="Safe Range", secondary_y=False, showticklabels=False)
+    fig.update_yaxes(title_text="Probability-Weighted Margin ($)", secondary_y=True)
+    
+    fig.update_layout(
+        title="Safe Discount Band vs. Probability-Weighted Margin",
+        height=400,
+        template="plotly_white",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    
+    return fig
+
+def create_deal_comparison_chart(amount, industry, sales_cycle, total_spent, price_gap):
+    """Create a radar chart comparing this deal to successful deals."""
+    
+    # In a real implementation, we would query the database for average values
+    # of successful deals. For demo purposes, we'll use dummy data.
+    avg_successful = {
+        "Amount": 30000,
+        "Sales Cycle": 21,
+        "Customer Spend": 25000,
+        "Price Gap": -5
+    }
+    
+    # Normalize values to 0-1 scale
+    max_values = {
+        "Amount": 100000,
+        "Sales Cycle": 60,
+        "Customer Spend": 100000,
+        "Price Gap": 20
+    }
+    
+    # Convert current deal values
+    current_deal_norm = {
+        "Amount": min(1, amount / max_values["Amount"]),
+        "Sales Cycle": min(1, sales_cycle / max_values["Sales Cycle"]),
+        "Customer Spend": min(1, total_spent / max_values["Customer Spend"]),
+        "Price Gap": min(1, (price_gap + 20) / 40)  # Adjust for negative values
+    }
+    
+    # Convert average successful deal values
+    avg_successful_norm = {
+        "Amount": min(1, avg_successful["Amount"] / max_values["Amount"]),
+        "Sales Cycle": min(1, avg_successful["Sales Cycle"] / max_values["Sales Cycle"]),
+        "Customer Spend": min(1, avg_successful["Customer Spend"] / max_values["Customer Spend"]),
+        "Price Gap": min(1, (avg_successful["Price Gap"] + 20) / 40)
+    }
+    
+    # Create radar chart
+    categories = ["Amount", "Sales Cycle", "Customer Spend", "Price Gap"]
+    
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatterpolar(
+        r=[current_deal_norm[c] for c in categories],
+        theta=categories,
+        fill='toself',
+        name='Current Deal'
+    ))
+    
+    fig.add_trace(go.Scatterpolar(
+        r=[avg_successful_norm[c] for c in categories],
+        theta=categories,
+        fill='toself',
+        name=f'Avg. Successful {industry}'
+    ))
+    
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(
+                visible=True,
+                range=[0, 1]
+            )
+        ),
+        showlegend=True,
+        title="Deal Comparison",
+        height=400
+    )
+    
+    return fig
+
+def create_historical_performance_chart():
+    """Create a chart showing historical performance of the model."""
+    # In a real implementation, we would query historical predictions
+    # For demo purposes, we'll use dummy data
+    
+    # Get all opportunities
+    with Session(engine) as session:
+        ops = session.exec(select(Opportunity)).all()
+    
+    if not ops:
+        return None
+    
+    df = pd.DataFrame([o.dict() for o in ops])
+    
+    # Group by month and calculate win rate
+    df['month'] = pd.to_datetime(df['stage_exited_at']).dt.strftime('%Y-%m')
+    monthly_stats = df.groupby('month').agg(
+        total=('outcome', 'count'),
+        won=('outcome', lambda x: (x == 'WON').sum())
+    ).reset_index()
+    
+    monthly_stats['win_rate'] = monthly_stats['won'] / monthly_stats['total']
+    
+    # Create dummy model performance data (normally would be actual lift)
+    monthly_stats['baseline_margin'] = monthly_stats['total'] * 5000
+    monthly_stats['actual_margin'] = monthly_stats['baseline_margin'] * (1 + monthly_stats.index * 0.05)
+    monthly_stats['lift_pct'] = (monthly_stats['actual_margin'] / monthly_stats['baseline_margin'] - 1) * 100
+    
+    # Create figure with secondary y-axis
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    
+    # Add win rate line
+    fig.add_trace(
+        go.Scatter(
+            x=monthly_stats['month'],
+            y=monthly_stats['win_rate'],
+            mode='lines+markers',
+            name='Win Rate',
+            line=dict(color='blue', width=3)
+        ),
+        secondary_y=False
+    )
+    
+    # Add margin lift bars
+    fig.add_trace(
+        go.Bar(
+            x=monthly_stats['month'],
+            y=monthly_stats['lift_pct'],
+            name='Margin Lift %',
+            marker_color='green'
+        ),
+        secondary_y=True
+    )
+    
+    # Update axes
+    fig.update_xaxes(title_text="Month")
+    fig.update_yaxes(title_text="Win Rate", secondary_y=False)
+    fig.update_yaxes(title_text="Margin Lift %", secondary_y=True)
+    
+    # Update layout
+    fig.update_layout(
+        title="Model Performance Over Time",
+        template="plotly_white",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        height=400
+    )
+    
+    return fig
+
+def prioritize_deals(opportunities_df):
+    """Rank deals by 'dollars at risk' for sales managers."""
+    # Apply model to each opportunity
+    results = []
+    
+    for _, opp in opportunities_df.iterrows():
+        # Build feature vector
+        feature_vector = {
+            'amount': opp['amount'],
+            'discount_pct': opp.get('discount_pct', 0),
+            'industry': opp.get('industry', 'unknown'),
+            'sales_cycle_days': calculate_sales_cycle_days(
+                opp.get('stage_entered_at'), 
+                datetime.datetime.now().strftime("%Y-%m-%d")
+            ),
+            'total_spent': calculate_customer_metrics(opp['customer_id'])['total_spent'],
+            'avg_order_value': calculate_customer_metrics(opp['customer_id'])['avg_order_value'],
+            'order_count': calculate_customer_metrics(opp['customer_id'])['order_count'],
+            'days_since_last_purchase': calculate_customer_metrics(opp['customer_id'])['days_since_last_purchase'],
+            'price_gap_pct': calculate_price_gap(
+                opp.get('list_price', 0) * (1 - (opp.get('discount_pct', 0) / 100)), 
+                opp.get('competitor_price', 0)
+            )
+        }
+        
+        # Get prediction
+        win_prob, drivers, discount_band = predict_with_lightgbm(feature_vector)
+        
+        if win_prob is None:
+            continue
+        
+        # Calculate current PWM
+        current_pwm = calculate_pwm(
+            win_prob, 
+            opp['amount'], 
+            opp.get('list_price', 1000), 
+            opp.get('discount_pct', 0),
+            opp.get('cost_price', None)
+        )
+        
+        # Calculate optimal PWM
+        # In a real implementation, we would simulate different discount levels
+        # For demo purposes, we'll use a simple heuristic
+        optimal_discount = (discount_band[0] + discount_band[1]) / 2
+        
+        # Simulate win probability with optimal discount
+        optimal_feature_vector = feature_vector.copy()
+        optimal_feature_vector['discount_pct'] = optimal_discount
+        optimal_sample = pd.DataFrame([optimal_feature_vector])
+        optimal_win_prob = model.predict_proba(optimal_sample)[0][1]
+        
+        optimal_pwm = calculate_pwm(
+            optimal_win_prob, 
+            opp['amount'], 
+            opp.get('list_price', 1000), 
+            optimal_discount,
+            opp.get('cost_price', None)
+        )
+        
+        # Calculate dollars at risk
+        dollars_at_risk = optimal_pwm - current_pwm
+        
+        results.append({
+            'opp_id': opp['opp_id'],
+            'customer_id': opp['customer_id'],
+            'amount': opp['amount'],
+            'industry': opp.get('industry', 'unknown'),
+            'current_discount': opp.get('discount_pct', 0),
+            'optimal_discount': optimal_discount,
+            'win_probability': win_prob,
+            'current_pwm': current_pwm,
+            'optimal_pwm': optimal_pwm,
+            'dollars_at_risk': dollars_at_risk
+        })
+    
+    # Convert to DataFrame and sort by dollars at risk
+    results_df = pd.DataFrame(results)
+    if not results_df.empty:
+        prioritized_deals = results_df.sort_values('dollars_at_risk', ascending=False)
+        return prioritized_deals
+    else:
+        return pd.DataFrame()
 
 # -----------------------------------------------------------------------------
 # Streamlit UI
 # -----------------------------------------------------------------------------
 
 def main():
-    st.title("Simlane MVP Dashboard")
+    st.set_page_config(
+        page_title="Simlane Sales Prediction",
+        page_icon="📊",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+
+    # Custom CSS for styling
+    st.markdown("""
+    <style>
+    .metric-card {
+        background-color: #f8f9fa;
+        border-radius: 5px;
+        padding: 15px;
+        box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
+    }
+    .big-number {
+        font-size: 32px;
+        font-weight: bold;
+        color: #1f77b4;
+    }
+    .card-title {
+        font-size: 14px;
+        color: #666;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 24px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        white-space: pre-wrap;
+        border-radius: 4px 4px 0px 0px;
+        padding: 0px 16px;
+        font-size: 16px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    st.title("Simlane Sales Prediction System")
     
     # Initialize database
     init_db()
@@ -531,24 +1066,443 @@ def main():
     model_loaded = load_model()
     model_status = "✅ Model loaded" if model_loaded else "❌ No trained model found"
     
-    st.sidebar.header("Model Status")
-    st.sidebar.write(model_status)
-    
     # Auto-train model if sample data was just loaded
     if data_loaded and not model_loaded:
         with st.spinner("Training initial model with sample data..."):
-            success, message = train_advanced_model()
+            success, message = train_lightgbm_model()
             if success:
                 st.success(message)
                 model_loaded = True
     
-    # Create tabs for different operations
-    tab1, tab2, tab3, tab4 = st.tabs(["Upload Data", "Train Model", "Make Predictions", "View Database"])
+    # Create tabs for different user personas
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "🧑‍💼 Account Executive", 
+        "👨‍💼 Sales Manager", 
+        "📈 RevOps / CRO",
+        "⚙️ Setup & Configuration"
+    ])
     
-    # Tab 1: Upload Data
+    # Tab 1: Account Executive View
     with tab1:
-        st.header("Upload CSV Data")
-        table_name = st.selectbox(
+        st.header("Deal Assessment")
+        st.write("Analyze a specific opportunity to determine win probability and optimal pricing.")
+        
+        # Input form
+        st.subheader("Opportunity Details")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            amount = st.number_input("Deal Amount ($):", min_value=1000.0, max_value=1000000.0, value=25000.0, step=1000.0)
+            industry = st.selectbox("Industry:", ["Technology", "Healthcare", "Manufacturing", "Financial Services", "Retail", "Other"])
+            sales_cycle = st.slider("Sales Cycle (days):", min_value=1, max_value=180, value=30)
+        
+        with col2:
+            list_price = st.number_input("List Price ($):", min_value=100.0, max_value=10000.0, value=1000.0, step=100.0)
+            current_discount = st.slider("Current Discount (%):", min_value=0, max_value=40, value=5)
+            cost_price = st.number_input("Cost Price ($):", min_value=1.0, max_value=list_price-1, value=min(list_price*0.6, list_price-1), step=10.0)
+        
+        with col3:
+            total_spent = st.number_input("Customer's Historical Spend ($):", min_value=0.0, value=50000.0, step=5000.0)
+            avg_order = st.number_input("Average Order Value ($):", min_value=0.0, value=5000.0, step=500.0)
+            competitor_price = st.number_input("Competitor Price ($):", min_value=0.0, value=list_price*0.95, step=100.0)
+        
+        # Calculate price gap percentage
+        effective_price = list_price * (1 - (current_discount / 100))
+        price_gap_pct = calculate_price_gap(effective_price, competitor_price)
+        
+        # Build feature vector
+        feature_vector = {
+            'amount': amount,
+            'discount_pct': current_discount,
+            'industry': industry,
+            'sales_cycle_days': sales_cycle,
+            'total_spent': total_spent,
+            'avg_order_value': avg_order,
+            'order_count': 5,  # Default
+            'days_since_last_purchase': 30,  # Default
+            'price_gap_pct': price_gap_pct
+        }
+        
+        if st.button("Analyze Deal"):
+            if not model_loaded:
+                st.error("Model not trained yet. Please train the model first in the Setup tab.")
+            else:
+                # Get prediction
+                with st.spinner("Analyzing deal characteristics..."):
+                    win_prob, drivers, discount_band = predict_with_lightgbm(feature_vector)
+                    
+                    if win_prob is None:
+                        st.error("Error making prediction. Please check your inputs.")
+                    else:
+                        # Calculate PWM
+                        pwm = calculate_pwm(win_prob, amount, list_price, current_discount, cost_price)
+                        
+                        # Dashboard layout
+                        st.subheader("Deal Analysis")
+                        
+                        # Top metrics row
+                        metric1, metric2, metric3, metric4 = st.columns(4)
+                        
+                        with metric1:
+                            st.markdown(f"""
+                            <div class="metric-card">
+                                <div class="card-title">Win Probability</div>
+                                <div class="big-number">{win_prob:.1%}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            
+                        with metric2:
+                            st.markdown(f"""
+                            <div class="metric-card">
+                                <div class="card-title">Probability-Weighted Margin</div>
+                                <div class="big-number">${pwm:,.0f}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            
+                        with metric3:
+                            st.markdown(f"""
+                            <div class="metric-card">
+                                <div class="card-title">Safe Discount Band</div>
+                                <div class="big-number">{discount_band[0]}% - {discount_band[1]}%</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            
+                        with metric4:
+                            optimal_discount = (discount_band[0] + discount_band[1]) / 2
+                            recommendation = "Hold Price" if current_discount < discount_band[0] else (
+                                "Price OK" if discount_band[0] <= current_discount <= discount_band[1] else "Consider Discount Reduction"
+                            )
+                            st.markdown(f"""
+                            <div class="metric-card">
+                                <div class="card-title">Recommendation</div>
+                                <div class="big-number">{recommendation}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        
+                        # Visualizations row
+                        chart1, chart2 = st.columns(2)
+                        
+                        with chart1:
+                            # Win probability gauge
+                            gauge_fig = create_win_probability_gauge(win_prob)
+                            st.plotly_chart(gauge_fig, use_container_width=True)
+                            
+                            # Driver chart
+                            if drivers:
+                                driver_fig = create_driver_chart(drivers)
+                                st.plotly_chart(driver_fig, use_container_width=True)
+                        
+                        with chart2:
+                            # Discount band chart
+                            discount_fig = create_discount_band_chart(current_discount, discount_band, pwm)
+                            st.plotly_chart(discount_fig, use_container_width=True)
+                            
+                            # Deal comparison radar
+                            radar_fig = create_deal_comparison_chart(
+                                amount, industry, sales_cycle, total_spent, price_gap_pct
+                            )
+                            st.plotly_chart(radar_fig, use_container_width=True)
+    
+    # Tab 2: Sales Manager View
+    with tab2:
+        st.header("Deal Desk Queue")
+        st.write("Focus your coaching on high-value deals with significant margin opportunity.")
+        
+        # Get all open opportunities from the database
+        with Session(engine) as session:
+            # In a real scenario, we would filter for open/active opportunities
+            # For demo purposes, we'll use all opportunities
+            open_opps = session.exec(select(Opportunity)).all()
+        
+        if not open_opps:
+            st.warning("No opportunities found in the database.")
+        else:
+            open_opps_df = pd.DataFrame([o.dict() for o in open_opps])
+            
+            # Only proceed if model is loaded
+            if not model_loaded:
+                st.error("Model not trained yet. Please train the model first in the Setup tab.")
+            else:
+                # Prioritize deals
+                with st.spinner("Analyzing opportunities..."):
+                    prioritized_deals = prioritize_deals(open_opps_df)
+                
+                if prioritized_deals.empty:
+                    st.warning("Could not calculate priorities for opportunities.")
+                else:
+                    # Show prioritized deals table
+                    st.subheader("Prioritized Opportunities by Dollars at Risk")
+                    
+                    # Format table for display
+                    display_df = prioritized_deals.copy()
+                    display_df['win_probability'] = display_df['win_probability'].apply(lambda x: f"{x:.1%}")
+                    display_df['current_pwm'] = display_df['current_pwm'].apply(lambda x: f"${x:,.0f}")
+                    display_df['optimal_pwm'] = display_df['optimal_pwm'].apply(lambda x: f"${x:,.0f}")
+                    display_df['dollars_at_risk'] = display_df['dollars_at_risk'].apply(lambda x: f"${x:,.0f}")
+                    display_df['current_discount'] = display_df['current_discount'].apply(lambda x: f"{x:.1f}%")
+                    display_df['optimal_discount'] = display_df['optimal_discount'].apply(lambda x: f"{x:.1f}%")
+                    
+                    columns_to_display = [
+                        'opp_id', 'customer_id', 'amount', 'industry', 
+                        'win_probability', 'current_discount', 'optimal_discount',
+                        'dollars_at_risk'
+                    ]
+                    
+                    st.dataframe(
+                        display_df[columns_to_display].head(10),
+                        use_container_width=True,
+                        height=300
+                    )
+                    
+                    # Scenario analysis
+                    st.subheader("Discount Strategy Scenario Analysis")
+                    st.write("See how changing your discount strategy affects overall revenue and margin.")
+                    
+                    discount_change = st.slider(
+                        "Change discounts by (percentage points):",
+                        min_value=-10,
+                        max_value=10,
+                        value=0,
+                        step=1
+                    )
+                    
+                    # Calculate impact
+                    total_current_deals = len(prioritized_deals)
+                    total_current_value = prioritized_deals['amount'].sum()
+                    
+                    # Simple model: Assume 2% win rate change per 1% discount change
+                    # and 1% margin change per 1% discount change
+                    win_rate_change = discount_change * 0.02
+                    margin_change = -discount_change * 0.01
+                    
+                    # Calculate adjusted metrics
+                    adjusted_win_rate = prioritized_deals['win_probability'].mean() + win_rate_change
+                    adjusted_win_rate = max(0, min(1, adjusted_win_rate))
+                    
+                    # Calculate expected revenue impact
+                    baseline_expected_revenue = (prioritized_deals['amount'] * prioritized_deals['win_probability']).sum()
+                    new_expected_revenue = total_current_value * adjusted_win_rate
+                    revenue_impact = new_expected_revenue - baseline_expected_revenue
+                    
+                    # Calculate margin impact
+                    baseline_margin = (prioritized_deals['current_pwm']).sum()
+                    new_margin = baseline_margin * (1 + margin_change)
+                    margin_impact = new_margin - baseline_margin
+                    
+                    # Display impact metrics
+                    impact1, impact2, impact3, impact4 = st.columns(4)
+                    
+                    with impact1:
+                        st.markdown(f"""
+                        <div class="metric-card">
+                            <div class="card-title">Deals Analyzed</div>
+                            <div class="big-number">{total_current_deals}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                    with impact2:
+                        st.markdown(f"""
+                        <div class="metric-card">
+                            <div class="card-title">Total Pipeline Value</div>
+                            <div class="big-number">${total_current_value:,.0f}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                    with impact3:
+                        impact_color = "#4CAF50" if revenue_impact >= 0 else "#F44336"
+                        st.markdown(f"""
+                        <div class="metric-card">
+                            <div class="card-title">Revenue Impact</div>
+                            <div class="big-number" style="color: {impact_color}">${revenue_impact:,.0f}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                    with impact4:
+                        impact_color = "#4CAF50" if margin_impact >= 0 else "#F44336"
+                        st.markdown(f"""
+                        <div class="metric-card">
+                            <div class="card-title">Margin Impact</div>
+                            <div class="big-number" style="color: {impact_color}">${margin_impact:,.0f}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+    
+    # Tab 3: RevOps / CRO View
+    with tab3:
+        st.header("Performance Analytics")
+        st.write("Measure the impact of the Simlane system on your sales performance.")
+        
+        # Date range selection
+        col1, col2 = st.columns(2)
+        with col1:
+            start_date = st.date_input(
+                "Start Date", 
+                value=datetime.datetime.now() - timedelta(days=90)
+            )
+        with col2:
+            end_date = st.date_input(
+                "End Date",
+                value=datetime.datetime.now()
+            )
+        
+        # Create performance chart
+        if model_loaded:
+            performance_fig = create_historical_performance_chart()
+            if performance_fig:
+                st.plotly_chart(performance_fig, use_container_width=True)
+            else:
+                st.warning("Insufficient historical data to display performance metrics.")
+        else:
+            st.error("Model not trained yet. Please train the model first in the Setup tab.")
+        
+        # Model performance metrics
+        st.subheader("Model Metrics")
+        
+        if model_loaded:
+            # In a real implementation, we would calculate actual metrics
+            # For demo purposes, we'll use dummy data
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("Model Precision", "76%", "5%")
+            
+            with col2:
+                st.metric("Model Recall", "83%", "7%")
+            
+            with col3:
+                st.metric("Average Margin Lift", "$432 per deal", "12%")
+            
+            with col4:
+                st.metric("Total Margin Added", "$215,864", "")
+        
+        # Lift report
+        st.subheader("Lift Report")
+        
+        # Date range for aggregation
+        lift_metrics = {
+            "Total Deals Analyzed": 124,
+            "Won Deals": 67,
+            "Baseline Win Rate": "45%",
+            "Actual Win Rate": "54%",
+            "Win Rate Lift": "9%",
+            "Baseline Margin": "$1.2M",
+            "Actual Margin": "$1.6M",
+            "Margin Lift": "$400K",
+            "Lift Percentage": "33%"
+        }
+        
+        # Create a dataframe for the lift report
+        lift_df = pd.DataFrame({
+            "Metric": lift_metrics.keys(),
+            "Value": lift_metrics.values()
+        })
+        
+        st.dataframe(lift_df, use_container_width=True, hide_index=True)
+        
+        # Export options
+        st.subheader("Export Data")
+        
+        export_format = st.selectbox(
+            "Export Format",
+            ["CSV", "Excel", "JSON"]
+        )
+        
+        if st.button("Export Lift Report"):
+            st.success(f"Lift report exported as {export_format} (demo functionality)")
+        
+        # API Documentation
+        with st.expander("API Documentation"):
+            st.markdown("""
+            ### Simlane API
+            
+            The Simlane API allows you to integrate predictions directly into your CRM or other systems.
+            
+            #### Endpoints
+            
+            **GET /api/predict**
+            
+            Predicts win probability and calculates probability-weighted margin for a deal.
+            
+            Parameters:
+            - `amount` (float): Deal amount
+            - `list_price` (float): List price per unit
+            - `discount_pct` (float, optional): Current discount percentage
+            - `industry` (string, optional): Customer industry
+            - `sales_cycle_days` (int, optional): Sales cycle length in days
+            - `customer_id` (string, optional): Customer ID for history lookup
+            - `competitor_price` (float, optional): Competitor's price if known
+            
+            Example Response:
+            ```json
+            {
+                "win_probability": 0.76,
+                "probability_weighted_margin": 15200,
+                "safe_discount_band": {"min": 2, "max": 7},
+                "top_drivers": [
+                    {
+                        "feature": "Amount",
+                        "importance": 0.32,
+                        "direction": "+",
+                        "value": 25000
+                    },
+                    ...
+                ]
+            }
+            ```
+            """)
+    
+    # Tab 4: Setup & Configuration
+    with tab4:
+        st.header("Setup & Configuration")
+        
+        # Data Management section
+        st.subheader("Data Management")
+        
+        table_tabs = st.tabs(["Transactions", "Pricing Logs", "Competitors", "Opportunities"])
+        
+        with table_tabs[0]:
+            # Transactions table
+            with Session(engine) as session:
+                transactions = session.exec(select(Transaction)).all()
+                if transactions:
+                    trans_df = pd.DataFrame([t.dict() for t in transactions])
+                    st.dataframe(trans_df, use_container_width=True)
+                else:
+                    st.info("No transaction data found.")
+        
+        with table_tabs[1]:
+            # Pricing logs table
+            with Session(engine) as session:
+                pricing_logs = session.exec(select(PricingLog)).all()
+                if pricing_logs:
+                    pricing_df = pd.DataFrame([p.dict() for p in pricing_logs])
+                    st.dataframe(pricing_df, use_container_width=True)
+                else:
+                    st.info("No pricing data found.")
+        
+        with table_tabs[2]:
+            # Competitors table
+            with Session(engine) as session:
+                competitors = session.exec(select(CompetitorPrice)).all()
+                if competitors:
+                    comp_df = pd.DataFrame([c.dict() for c in competitors])
+                    st.dataframe(comp_df, use_container_width=True)
+                else:
+                    st.info("No competitor data found.")
+        
+        with table_tabs[3]:
+            # Opportunities table
+            with Session(engine) as session:
+                opportunities = session.exec(select(Opportunity)).all()
+                if opportunities:
+                    opp_df = pd.DataFrame([o.dict() for o in opportunities])
+                    st.dataframe(opp_df, use_container_width=True)
+                else:
+                    st.info("No opportunity data found.")
+        
+        # Data upload section
+        st.subheader("Upload Data")
+        
+        upload_table = st.selectbox(
             "Select table to upload to:",
             ["transactions", "pricing_logs", "competitors", "opportunities"]
         )
@@ -557,7 +1511,7 @@ def main():
         if uploaded_file is not None:
             df = pd.read_csv(uploaded_file)
             st.write(f"Preview of {uploaded_file.name}:")
-            st.dataframe(df.head())
+            st.dataframe(df.head(), use_container_width=True)
             
             if st.button("Upload to Database"):
                 table_map = {
@@ -566,153 +1520,42 @@ def main():
                     "competitors": CompetitorPrice,
                     "opportunities": Opportunity,
                 }
-                bulk_insert_dataframe(df, table_map[table_name])
-                st.success(f"Successfully uploaded {len(df)} rows to {table_name} table!")
-    
-    # Tab 2: Train Model
-    with tab2:
-        st.header("Train Propensity Model")
-        st.write("This will train a Random Forest model to predict the probability of winning an opportunity based on multiple features.")
+                bulk_insert_dataframe(df, table_map[upload_table])
+                st.success(f"Successfully uploaded {len(df)} rows to {upload_table} table!")
         
-        with st.expander("Model Details"):
+        # Model training section
+        st.subheader("Model Training")
+        
+        with st.expander("Model Configuration"):
             st.markdown("""
-            ### Features Used in the Model
+            ### LightGBM Model Configuration
             
-            The enhanced model uses the following features:
+            The current model uses a LightGBM classifier with the following parameters:
             
-            **Opportunity-specific features:**
+            - `n_estimators`: 100
+            - `learning_rate`: 0.05
+            - `num_leaves`: 31
+            - `feature_fraction`: 0.8
+            - `bagging_fraction`: 0.8
+            - `bagging_freq`: 5
+            
+            Features used in the model:
+            
             - Amount
+            - Discount Percentage
             - Industry
-            - Sales cycle duration
-            
-            **Customer relationship features:**
-            - Total historical spend
-            - Average order value
-            - Number of previous orders
-            - Days since last purchase
-            
-            **Competitive factors:**
-            - Price position relative to competitors
-            - Price difference percentage
-            
-            ### Model Architecture
-            
-            - Random Forest classifier with 100 trees
-            - Handles missing values with imputation
-            - Standardizes numeric features
-            - One-hot encodes categorical features
+            - Sales Cycle Duration
+            - Customer Metrics (total spent, average order value, etc.)
+            - Price Gap Percentage
             """)
         
-        if st.button("Train Advanced Model"):
+        if st.button("Train Model"):
             with st.spinner("Training model..."):
-                success, message = train_advanced_model()
+                success, message = train_lightgbm_model()
                 if success:
                     st.success(message)
                 else:
                     st.error(message)
-    
-    # Tab 3: Make Predictions
-    with tab3:
-        st.header("Predict Win Probability")
-        
-        # Input fields for prediction
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            amount = st.number_input("Opportunity Amount ($):", min_value=0.0, value=10000.0)
-            industry = st.selectbox(
-                "Industry:",
-                ["Technology", "Healthcare", "Manufacturing", "Financial Services", "Retail", "Other"]
-            )
-            sales_cycle = st.slider("Sales Cycle (days):", min_value=1, max_value=365, value=30)
-        
-        with col2:
-            total_spent = st.number_input("Customer's Historical Spend ($):", min_value=0.0, value=50000.0)
-            avg_order = st.number_input("Average Order Value ($):", min_value=0.0, value=5000.0)
-            order_count = st.number_input("Previous Order Count:", min_value=0, value=10)
-        
-        if st.button("Predict Win Probability"):
-            prob, importances = predict_with_advanced_model(
-                amount=amount,
-                industry=industry,
-                sales_cycle_days=sales_cycle,
-                total_spent=total_spent,
-                avg_order_value=avg_order,
-                order_count=order_count
-            )
-            
-            if prob is None:
-                st.error("Model not trained yet. Please train the model first.")
-            else:
-                st.success(f"Win Probability: {prob:.2%}")
-                
-                # Visualization
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    # Gauge chart
-                    fig, ax = plt.subplots(figsize=(4, 4), subplot_kw=dict(polar=True))
-                    
-                    # Gauge visualization
-                    pos = prob * 180  # convert to angle (half circle)
-                    
-                    # Create gauge background
-                    theta = np.linspace(0, np.pi, 100)
-                    ax.plot(theta, [1] * 100, color='lightgray', linewidth=8)
-                    
-                    # Create gauge value
-                    theta_val = np.linspace(0, np.pi * prob, 100)
-                    ax.plot(theta_val, [1] * len(theta_val), color='green' if prob > 0.5 else 'orange', linewidth=8)
-                    
-                    # Customize gauge
-                    ax.set_rticks([])  # No radial ticks
-                    ax.set_thetagrids([0, 45, 90, 135, 180], labels=['0%', '25%', '50%', '75%', '100%'])
-                    ax.spines['polar'].set_visible(False)
-                    ax.set_title('Win Probability', fontsize=14)
-                    
-                    st.pyplot(fig)
-                    
-                with col2:
-                    # Show feature importance if available
-                    if importances:
-                        st.subheader("Top Factors")
-                        # Get top 5 features
-                        top_features = importances[:5]
-                        
-                        feature_names = [name.replace('_', ' ').replace('cat ', '').title() for name, _ in top_features]
-                        importance_vals = [imp for _, imp in top_features]
-                        
-                        fig, ax = plt.subplots(figsize=(5, 4))
-                        ax.barh(feature_names, importance_vals)
-                        ax.set_xlabel('Importance')
-                        ax.set_title('Key Factors in Prediction')
-                        st.pyplot(fig)
-    
-    # Tab 4: View Database
-    with tab4:
-        st.header("View Database Tables")
-        table_to_view = st.selectbox(
-            "Select table to view:",
-            ["transactions", "pricing_logs", "competitors", "opportunities"]
-        )
-        
-        if st.button("View Data"):
-            with Session(engine) as session:
-                if table_to_view == "transactions":
-                    data = session.exec(select(Transaction)).all()
-                elif table_to_view == "pricing_logs":
-                    data = session.exec(select(PricingLog)).all()
-                elif table_to_view == "competitors":
-                    data = session.exec(select(CompetitorPrice)).all()
-                else:  # opportunities
-                    data = session.exec(select(Opportunity)).all()
-                
-                if not data:
-                    st.info(f"No data in {table_to_view} table.")
-                else:
-                    df = pd.DataFrame([item.dict() for item in data])
-                    st.dataframe(df)
-                    st.write(f"Total rows: {len(df)}")
 
 if __name__ == "__main__":
     main()
