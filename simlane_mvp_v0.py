@@ -80,6 +80,155 @@ def bulk_insert_dataframe(df: pd.DataFrame, model_cls):
         session.commit()
 
 # -----------------------------------------------------------------------------
+# Sample data loading function
+# -----------------------------------------------------------------------------
+
+def load_sample_data():
+    # Check if tables are empty
+    with Session(engine) as session:
+        transaction_count = session.exec(select(Transaction)).first()
+        pricing_count = session.exec(select(PricingLog)).first()
+        competitor_count = session.exec(select(CompetitorPrice)).first()
+        opportunity_count = session.exec(select(Opportunity)).first()
+        
+        # Only load sample data if all tables are empty
+        if not (transaction_count or pricing_count or competitor_count or opportunity_count):
+            st.info("Loading sample data for first-time setup...")
+            
+            # Sample transaction data
+            transactions_data = """
+transaction_id,customer_id,product_id,date,quantity,revenue
+T1001,C101,P201,2024-01-15,2,4000
+T1002,C102,P202,2024-01-17,1,5500
+T1003,C103,P203,2024-01-20,3,9000
+T1004,C101,P204,2024-01-22,1,3500
+T1005,C104,P201,2024-01-28,2,4000
+T1006,C105,P205,2024-02-03,1,12000
+T1007,C106,P206,2024-02-08,4,16000
+T1008,C102,P207,2024-02-10,1,7500
+T1009,C107,P208,2024-02-15,2,8000
+T1010,C108,P209,2024-02-18,1,9500
+T1011,C109,P210,2024-02-22,3,15000
+T1012,C101,P203,2024-02-25,2,6000
+T1013,C110,P201,2024-03-01,1,2000
+T1014,C111,P211,2024-03-05,5,25000
+T1015,C112,P212,2024-03-08,1,8500
+T1016,C113,P213,2024-03-12,2,11000
+T1017,C103,P206,2024-03-15,3,12000
+T1018,C107,P214,2024-03-18,1,6500
+T1019,C114,P215,2024-03-22,4,18000
+T1020,C115,P216,2024-03-26,2,14000
+T1021,C116,P217,2024-03-30,1,9000
+T1022,C101,P218,2024-04-02,3,15000
+T1023,C117,P219,2024-04-05,1,7500
+T1024,C106,P220,2024-04-08,2,13000
+T1025,C118,P221,2024-04-12,4,22000
+            """
+            df_transactions = pd.read_csv(io.StringIO(transactions_data))
+            bulk_insert_dataframe(df_transactions, Transaction)
+            
+            # Sample pricing data
+            pricing_data = """
+pricing_id,date,product_id,list_price,discount,final_price
+PL1001,2024-01-01,P201,2200,10,2000
+PL1002,2024-01-01,P202,6000,8.33,5500
+PL1003,2024-01-01,P203,3500,14.29,3000
+PL1004,2024-01-01,P204,4000,12.5,3500
+PL1005,2024-01-01,P205,13000,7.69,12000
+PL1006,2024-01-01,P206,4500,11.11,4000
+PL1007,2024-01-01,P207,8000,6.25,7500
+PL1008,2024-01-01,P208,4500,11.11,4000
+PL1009,2024-01-01,P209,10000,5,9500
+PL1010,2024-01-01,P210,5500,9.09,5000
+PL1011,2024-01-01,P211,5500,9.09,5000
+PL1012,2024-01-01,P212,9000,5.56,8500
+PL1013,2024-01-01,P213,6000,8.33,5500
+PL1014,2024-01-01,P214,7000,7.14,6500
+PL1015,2024-01-01,P215,5000,10,4500
+PL1016,2024-01-01,P216,7500,6.67,7000
+PL1017,2024-01-01,P217,9500,5.26,9000
+PL1018,2024-01-01,P218,5500,9.09,5000
+PL1019,2024-01-01,P219,8000,6.25,7500
+PL1020,2024-01-01,P220,7000,7.14,6500
+PL1021,2024-01-01,P221,6000,8.33,5500
+            """
+            df_pricing = pd.read_csv(io.StringIO(pricing_data))
+            bulk_insert_dataframe(df_pricing, PricingLog)
+            
+            # Sample competitor data
+            competitor_data = """
+competitor_id,competitor_name,product_id,price,date
+CP1001,CompetitorA,P201,2100,2024-01-01
+CP1002,CompetitorB,P201,2300,2024-01-01
+CP1003,CompetitorA,P202,5800,2024-01-01
+CP1004,CompetitorB,P202,5900,2024-01-01
+CP1005,CompetitorA,P203,3200,2024-01-01
+CP1006,CompetitorB,P203,3100,2024-01-01
+CP1007,CompetitorA,P204,3600,2024-01-01
+CP1008,CompetitorB,P204,3700,2024-01-01
+CP1009,CompetitorA,P205,11500,2024-01-01
+CP1010,CompetitorB,P205,12500,2024-01-01
+CP1011,CompetitorA,P206,4200,2024-01-01
+CP1012,CompetitorB,P206,4100,2024-01-01
+CP1013,CompetitorA,P207,7800,2024-01-01
+CP1014,CompetitorB,P207,7600,2024-01-01
+CP1015,CompetitorA,P208,4200,2024-01-01
+CP1016,CompetitorB,P208,4300,2024-01-01
+CP1017,CompetitorA,P209,9800,2024-01-01
+CP1018,CompetitorB,P209,9700,2024-01-01
+CP1019,CompetitorA,P210,5200,2024-01-01
+CP1020,CompetitorB,P210,5100,2024-01-01
+CP1021,CompetitorC,P201,2000,2024-01-01
+CP1022,CompetitorC,P202,5600,2024-01-01
+CP1023,CompetitorC,P203,3000,2024-01-01
+CP1024,CompetitorC,P204,3400,2024-01-01
+CP1025,CompetitorC,P205,12200,2024-01-01
+            """
+            df_competitor = pd.read_csv(io.StringIO(competitor_data))
+            bulk_insert_dataframe(df_competitor, CompetitorPrice)
+            
+            # Sample opportunity data
+            opportunity_data = """
+opp_id,customer_id,stage_entered_at,stage_exited_at,amount,outcome,industry
+OPP1001,C101,2024-01-01,2024-01-15,12000,WON,Technology
+OPP1002,C102,2024-01-05,2024-01-25,25000,WON,Healthcare
+OPP1003,C103,2024-01-10,2024-02-10,45000,WON,Financial Services
+OPP1004,C104,2024-01-15,2024-02-15,8000,LOST,Retail
+OPP1005,C105,2024-01-20,2024-02-20,30000,WON,Manufacturing
+OPP1006,C106,2024-01-25,2024-02-25,55000,WON,Technology
+OPP1007,C107,2024-02-01,2024-03-01,15000,LOST,Healthcare
+OPP1008,C108,2024-02-05,2024-03-05,22000,LOST,Retail
+OPP1009,C109,2024-02-10,2024-03-10,18000,WON,Financial Services
+OPP1010,C110,2024-02-15,2024-03-15,7000,LOST,Manufacturing
+OPP1011,C111,2024-02-20,2024-03-20,65000,WON,Technology
+OPP1012,C112,2024-02-25,2024-03-25,28000,WON,Healthcare
+OPP1013,C113,2024-03-01,2024-04-01,42000,LOST,Financial Services
+OPP1014,C114,2024-03-05,2024-04-05,33000,WON,Retail
+OPP1015,C115,2024-03-10,2024-04-10,50000,WON,Manufacturing
+OPP1016,C116,2024-03-15,2024-04-15,17000,LOST,Technology
+OPP1017,C117,2024-03-20,2024-04-20,26000,WON,Healthcare
+OPP1018,C118,2024-03-25,2024-04-25,38000,WON,Financial Services
+OPP1019,C101,2024-01-30,2024-02-28,10000,WON,Technology
+OPP1020,C103,2024-02-15,2024-03-15,35000,LOST,Financial Services
+OPP1021,C106,2024-03-05,2024-04-05,48000,WON,Technology
+OPP1022,C109,2024-03-20,2024-04-20,22000,WON,Financial Services
+OPP1023,C112,2024-04-01,2024-04-30,31000,LOST,Healthcare
+OPP1024,C114,2024-04-10,2024-05-10,27000,WON,Retail
+OPP1025,C101,2024-04-15,2024-05-15,14000,WON,Technology
+OPP1026,C105,2024-04-20,2024-05-20,36000,LOST,Manufacturing
+OPP1027,C111,2024-04-25,2024-05-25,72000,WON,Technology
+OPP1028,C115,2024-05-01,2024-05-30,45000,WON,Manufacturing
+OPP1029,C103,2024-05-05,2024-06-05,29000,LOST,Financial Services
+OPP1030,C118,2024-05-10,2024-06-10,41000,WON,Financial Services
+            """
+            df_opportunity = pd.read_csv(io.StringIO(opportunity_data))
+            bulk_insert_dataframe(df_opportunity, Opportunity)
+            
+            st.success("Sample data loaded successfully!")
+            return True
+    return False
+
+# -----------------------------------------------------------------------------
 # Enhanced Feature Engineering and Model Processing
 # -----------------------------------------------------------------------------
 
@@ -289,13 +438,17 @@ def train_advanced_model():
     model = pipeline
     
     # Get feature importance
-    feature_names = (
-        numeric_features + 
-        list(pipeline.named_steps['preprocessor']
-             .named_transformers_['cat']
-             .named_steps['onehot']
-             .get_feature_names_out(categorical_features))
-    )
+    feature_names = None
+    try:
+        feature_names = (
+            numeric_features + 
+            list(pipeline.named_steps['preprocessor']
+                .named_transformers_['cat']
+                .named_steps['onehot']
+                .get_feature_names_out(categorical_features))
+        )
+    except:
+        pass
     
     importances = pipeline.named_steps['classifier'].feature_importances_
     
@@ -328,33 +481,35 @@ def predict_with_advanced_model(amount, industry="Technology", sales_cycle_days=
     
     # Get feature importance for this prediction (SHAP values would be better,
     # but for simplicity we'll just use global feature importance)
-    if hasattr(model.named_steps['classifier'], 'feature_importances_'):
-        importances = model.named_steps['classifier'].feature_importances_
-        
-        # Get feature names (simplified approach)
-        feature_names = []
-        for name, transformer in model.named_steps['preprocessor'].transformers_:
-            if name == 'num':
-                feature_names.extend(transformer.get_feature_names_out([
-                    'amount', 'sales_cycle_days', 'total_spent', 
-                    'avg_order_value', 'order_count', 
-                    'days_since_last_purchase', 'price_difference_pct'
-                ]))
-            elif name == 'cat':
-                try:
-                    feature_names.extend(transformer.named_steps['onehot']
-                                         .get_feature_names_out(['industry', 'price_position']))
-                except:
-                    # Fallback if feature names can't be extracted
-                    feature_names.extend([f'cat_{i}' for i in range(10)])
-        
-        # Pair feature names with importance values
-        importance_pairs = sorted(
-            zip(feature_names, importances),
-            key=lambda x: x[1],
-            reverse=True
-        )
-    else:
+    importance_pairs = []
+    try:
+        if hasattr(model.named_steps['classifier'], 'feature_importances_'):
+            importances = model.named_steps['classifier'].feature_importances_
+            
+            # Get feature names (simplified approach)
+            feature_names = []
+            for name, transformer in model.named_steps['preprocessor'].transformers_:
+                if name == 'num':
+                    feature_names.extend(transformer.get_feature_names_out([
+                        'amount', 'sales_cycle_days', 'total_spent', 
+                        'avg_order_value', 'order_count', 
+                        'days_since_last_purchase', 'price_difference_pct'
+                    ]))
+                elif name == 'cat':
+                    try:
+                        feature_names.extend(transformer.named_steps['onehot']
+                                            .get_feature_names_out(['industry', 'price_position']))
+                    except:
+                        # Fallback if feature names can't be extracted
+                        feature_names.extend([f'cat_{i}' for i in range(10)])
+            
+            # Pair feature names with importance values
+            importance_pairs = sorted(
+                zip(feature_names, importances),
+                key=lambda x: x[1],
+                reverse=True
+            )
+    except:
         importance_pairs = []
     
     return win_prob, importance_pairs
@@ -369,12 +524,23 @@ def main():
     # Initialize database
     init_db()
     
+    # Load sample data if tables are empty
+    data_loaded = load_sample_data()
+    
     # Load model if exists
     model_loaded = load_model()
     model_status = "✅ Model loaded" if model_loaded else "❌ No trained model found"
     
     st.sidebar.header("Model Status")
     st.sidebar.write(model_status)
+    
+    # Auto-train model if sample data was just loaded
+    if data_loaded and not model_loaded:
+        with st.spinner("Training initial model with sample data..."):
+            success, message = train_advanced_model()
+            if success:
+                st.success(message)
+                model_loaded = True
     
     # Create tabs for different operations
     tab1, tab2, tab3, tab4 = st.tabs(["Upload Data", "Train Model", "Make Predictions", "View Database"])
@@ -513,7 +679,7 @@ def main():
                         # Get top 5 features
                         top_features = importances[:5]
                         
-                        feature_names = [name.split('__')[-1].replace('_', ' ').title() for name, _ in top_features]
+                        feature_names = [name.replace('_', ' ').replace('cat ', '').title() for name, _ in top_features]
                         importance_vals = [imp for _, imp in top_features]
                         
                         fig, ax = plt.subplots(figsize=(5, 4))
