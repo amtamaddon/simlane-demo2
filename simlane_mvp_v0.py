@@ -1,41 +1,10 @@
 import sys
 import os
-import subprocess
 import streamlit as st
-
-# Check if running in Streamlit environment
-is_streamlit = 'STREAMLIT_SHARING_MODE' in os.environ or sys.argv[0].endswith('streamlit')
-
-# -----------------------------------------------------------------------------
-# Skip auto-installation when running in Streamlit
-# -----------------------------------------------------------------------------
-REQUIRED_PKGS = [
-    "fastapi",           # web framework
-    "uvicorn[standard]", # ASGI server runtime
-    "sqlmodel",          # ORM / SQL
-    "pandas",            # data wrangling
-    "scikit-learn",      # ML baseline
-    "python-multipart"   # for file uploads
-]
-
-# Only attempt to install packages if NOT running in Streamlit
-if not is_streamlit:
-    for pkg in REQUIRED_PKGS:
-        try:
-            __import__(pkg.split("[")[0])
-        except ModuleNotFoundError:
-            print(f"[Simlane] Installing missing dependency: {pkg}")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
-
-# -----------------------------------------------------------------------------
-# Now that dependencies are assumed to be available, import them
-# -----------------------------------------------------------------------------
-from fastapi import FastAPI, UploadFile, File, HTTPException
 from sqlmodel import Field, SQLModel, create_engine, Session, select
 from typing import Optional
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
-import uvicorn
 import io
 import pickle
 
@@ -93,29 +62,6 @@ def init_db():
     SQLModel.metadata.create_all(engine)
 
 # -----------------------------------------------------------------------------
-# FastAPI app instance
-# -----------------------------------------------------------------------------
-app = FastAPI(title="Simlane MVP v0")
-
-MODEL_PATH = "propensity.pkl"
-model = None  # loaded at startup if present
-
-# -----------------------------------------------------------------------------
-# Event hooks
-# -----------------------------------------------------------------------------
-
-@app.on_event("startup")
-def startup_event():
-    """Create tables and load an existing model if it was previously trained."""
-    init_db()
-    global model
-    try:
-        with open(MODEL_PATH, "rb") as f:
-            model = pickle.load(f)
-    except FileNotFoundError:
-        model = None
-
-# -----------------------------------------------------------------------------
 # Internal helper to bulk‑insert DataFrame rows into a SQLModel table
 # -----------------------------------------------------------------------------
 
@@ -126,87 +72,70 @@ def bulk_insert_dataframe(df: pd.DataFrame, model_cls):
         session.commit()
 
 # -----------------------------------------------------------------------------
-# REST endpoints
+# Model management
 # -----------------------------------------------------------------------------
 
-@app.post("/upload/{table_name}")
-async def upload_csv(table_name: str, file: UploadFile = File(...)):
-    """Upload a CSV file to populate any of the raw tables.
+MODEL_PATH = "propensity.pkl"
+model = None
 
-    Allowed table_name values: transactions | pricing_logs | competitors | opportunities
-    """
-    table_map = {
-        "transactions": Transaction,
-        "pricing_logs": PricingLog,
-        "competitors": CompetitorPrice,
-        "opportunities": Opportunity,
-    }
-    if table_name not in table_map:
-        raise HTTPException(status_code=400, detail="Unknown table name")
+def load_model():
+    global model
+    try:
+        with open(MODEL_PATH, "rb") as f:
+            model = pickle.load(f)
+        return True
+    except FileNotFoundError:
+        return False
 
-    # Read file into pandas DataFrame (auto‑detect encoding)
-    content = await file.read()
-    df = pd.read_csv(io.BytesIO(content))
-
-    bulk_insert_dataframe(df, table_map[table_name])
-    return {"status": "ok", "rows_ingested": len(df)}
-
-@app.post("/train/propensity")
-def train_propensity():
-    """Train a naive propensity‑to‑buy model (LogisticRegression on amount)."""
+def train_model():
+    global model
     with Session(engine) as session:
         ops = session.exec(select(Opportunity)).all()
-
+    
     if not ops:
-        raise HTTPException(status_code=400, detail="No opportunity data to train on.")
-
+        return False, "No opportunity data to train on."
+    
     df = pd.DataFrame([o.dict() for o in ops])
     df = df.dropna(subset=["outcome", "amount"])
+    
+    if len(df) == 0:
+        return False, "No valid opportunity data with both outcome and amount."
+    
     X = df[["amount"]]
     y = df["outcome"].apply(lambda x: 1 if x.upper() == "WON" else 0)
-
+    
     clf = LogisticRegression()
     clf.fit(X, y)
-
+    
     with open(MODEL_PATH, "wb") as f:
         pickle.dump(clf, f)
-
-    global model
+    
     model = clf
+    return True, f"Model trained successfully with {len(df)} samples!"
 
-    return {"status": "trained", "samples": len(df)}
-
-@app.get("/predict/propensity")
-def predict_propensity(amount: float):
-    """Predict win probability for a single deal amount."""
+def predict(amount):
+    global model
     if model is None:
-        raise HTTPException(status_code=400, detail="Model not trained yet.")
-
+        load_model()
+        if model is None:
+            return None
+    
     prob = float(model.predict_proba([[amount]])[0][1])
-    return {"propensity_to_buy": prob}
-
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
+    return prob
 
 # -----------------------------------------------------------------------------
 # Streamlit UI
 # -----------------------------------------------------------------------------
 
-def streamlit_app():
+def main():
     st.title("Simlane MVP Dashboard")
     
     # Initialize database
     init_db()
     
     # Load model if exists
-    global model
-    try:
-        with open(MODEL_PATH, "rb") as f:
-            model = pickle.load(f)
-        model_status = "✅ Model loaded"
-    except FileNotFoundError:
-        model_status = "❌ No trained model found"
+    model_loaded = load_model()
+    model_status = "✅ Model loaded" if model_loaded else "❌ No trained model found"
     
     st.sidebar.header("Model Status")
     st.sidebar.write(model_status)
@@ -244,30 +173,11 @@ def streamlit_app():
         st.write("This will train a model to predict the probability of winning an opportunity based on its amount.")
         
         if st.button("Train Model"):
-            with Session(engine) as session:
-                ops = session.exec(select(Opportunity)).all()
-            
-            if not ops:
-                st.error("No opportunity data to train on. Please upload opportunity data first.")
+            success, message = train_model()
+            if success:
+                st.success(message)
             else:
-                df = pd.DataFrame([o.dict() for o in ops])
-                df = df.dropna(subset=["outcome", "amount"])
-                
-                if len(df) == 0:
-                    st.error("No valid opportunity data with both outcome and amount. Please check your data.")
-                else:
-                    X = df[["amount"]]
-                    y = df["outcome"].apply(lambda x: 1 if x.upper() == "WON" else 0)
-                    
-                    clf = LogisticRegression()
-                    clf.fit(X, y)
-                    
-                    with open(MODEL_PATH, "wb") as f:
-                        pickle.dump(clf, f)
-                    
-                    model = clf
-                    
-                    st.success(f"Model trained successfully with {len(df)} samples!")
+                st.error(message)
     
     # Tab 3: Make Predictions
     with tab3:
@@ -276,10 +186,10 @@ def streamlit_app():
         amount = st.number_input("Enter opportunity amount:", min_value=0.0, value=10000.0)
         
         if st.button("Predict"):
-            if model is None:
+            prob = predict(amount)
+            if prob is None:
                 st.error("Model not trained yet. Please train the model first.")
             else:
-                prob = float(model.predict_proba([[amount]])[0][1])
                 st.success(f"Propensity to buy: {prob:.2%}")
                 
                 # Visualization
@@ -316,12 +226,5 @@ def streamlit_app():
                     st.dataframe(df)
                     st.write(f"Total rows: {len(df)}")
 
-# -----------------------------------------------------------------------------
-# Entrypoint for local execution
-# -----------------------------------------------------------------------------
-
 if __name__ == "__main__":
-    if is_streamlit:
-        streamlit_app()
-    else:
-        uvicorn.run("simlane_mvp_v0:app", host="0.0.0.0", port=8000, reload=True)
+    main()
