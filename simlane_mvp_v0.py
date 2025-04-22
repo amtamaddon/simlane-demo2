@@ -12,14 +12,6 @@ import subprocess
 # -----------------------------------------------------------------------------
 # Best‑effort auto‑installer for required third‑party packages
 # -----------------------------------------------------------------------------
-REQUIRED_PKGS = [
-    "fastapi",           # web framework
-    "uvicorn[standard]", # ASGI server runtime
-    "sqlmodel",          # ORM / SQL
-    "pandas",            # data wrangling
-    "scikit-learn",      # ML baseline
-    "python-multipart"   # for file uploads
-]
 
 # Install any missing packages at runtime (helpful for bare environments)
 for pkg in REQUIRED_PKGS:
