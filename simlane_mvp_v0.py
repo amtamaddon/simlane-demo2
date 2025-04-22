@@ -200,9 +200,9 @@ def streamlit_app():
     init_db()
     
     # Load model if exists
+    global model
     try:
         with open(MODEL_PATH, "rb") as f:
-            global model
             model = pickle.load(f)
         model_status = "✅ Model loaded"
     except FileNotFoundError:
@@ -265,7 +265,6 @@ def streamlit_app():
                     with open(MODEL_PATH, "wb") as f:
                         pickle.dump(clf, f)
                     
-                    global model
                     model = clf
                     
                     st.success(f"Model trained successfully with {len(df)} samples!")
