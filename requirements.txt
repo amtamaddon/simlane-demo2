@@ -7,3 +7,13 @@ python-multipart
 streamlit
 matplotlib
 seaborn
+lightgbm
+shap
+plotly
+matplotlib
+seaborn
+pandas
+numpy
+scikit-learn
+streamlit
+sqlmodel
