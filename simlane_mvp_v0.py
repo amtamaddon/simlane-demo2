@@ -1,6 +1,10 @@
+import streamlit as st
+
+# Set page configuration
+st.set_page_config(layout="wide", page_title="Simlane Sales Prediction System", page_icon="💰")
+
 import os
 import sys
-import streamlit as st
 import io
 import pickle
 import pandas as pd
@@ -29,9 +33,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import shap
-
-# Set page configuration
-st.set_page_config(layout="wide", page_title="Simlane Sales Prediction System", page_icon="💰")
 
 # -----------------------------------------------------------------------------
 # Database setup (SQLite for simplicity)
