@@ -128,6 +128,8 @@ T1001,C101,P201,2024-01-15,2,4000
 ... (trimmed for brevity) ...
 """
     df_tx = pd.read_csv(io.StringIO(tx_csv))
+    # drop any malformed rows missing keys
+    df_tx.dropna(subset=["transaction_id","customer_id","product_id"], inplace=True)
     bulk_insert_dataframe(df_tx, Transaction)
     # pricing CSV
     pr_csv = """
@@ -136,6 +138,7 @@ PL1001,2024-01-01,P201,2200,10,2000
 ... (trimmed) ...
 """
     df_pr = pd.read_csv(io.StringIO(pr_csv))
+    df_pr.dropna(subset=["pricing_id","product_id"], inplace=True)
     bulk_insert_dataframe(df_pr, PricingLog)
     # competitor CSV
     cp_csv = """
@@ -144,6 +147,7 @@ CP1001,CompetitorA,P201,2100,2024-01-01
 ... (trimmed) ...
 """
     df_cp = pd.read_csv(io.StringIO(cp_csv))
+    df_cp.dropna(subset=["competitor_id","competitor_name"], inplace=True)
     bulk_insert_dataframe(df_cp, CompetitorPrice)
     # opportunity CSV
     op_csv = """
@@ -152,6 +156,7 @@ OPP1001,C101,2024-01-01,2024-01-15,12000,5,1000,600,WON,Technology,CompetitorA,9
 ... (trimmed) ...
 """
     df_op = pd.read_csv(io.StringIO(op_csv))
+    df_op.dropna(subset=["opp_id","customer_id"], inplace=True)
     bulk_insert_dataframe(df_op, Opportunity)
 
     st.success("Sample data loaded successfully!")
