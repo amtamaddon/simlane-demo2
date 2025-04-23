@@ -1,7 +1,7 @@
 # ------------------------------------------------------------
-# Simlane MVP – v1.4
-#   • explicit __tablename__ + extend_existing   (rerun‑safe)
-#   • robust enrich_opportunities & prediction UI
+# Simlane MVP – v1.5
+#   • adds _safe_rerun() for Streamlit version compatibility
+#   • still includes all previous fixes
 # ------------------------------------------------------------
 
 # ---------- 1. Streamlit page config ----------
@@ -10,6 +10,14 @@ st.set_page_config(page_title="Simlane Sales Prediction",
                    page_icon="📊",
                    layout="wide",
                    initial_sidebar_state="expanded")
+
+# Helper that works on all Streamlit versions
+def _safe_rerun():
+    """Rerun the app regardless of Streamlit version."""
+    try:
+        st.rerun()              # Streamlit ≥ 1.25
+    except AttributeError:
+        st.experimental_rerun() # Streamlit < 1.25
 
 # ---------- 2. Standard libs ----------
 import io, pickle, datetime
@@ -26,9 +34,9 @@ from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 try:
-    import shap
+    import shap       # optional, heavy
 except Exception:
-    shap = None          # shap is optional – large dependency
+    shap = None
 
 # ---------- 4. SQLModel / SQLAlchemy ----------
 from sqlmodel import Field, SQLModel, create_engine, Session, select
@@ -41,7 +49,7 @@ engine = create_engine(
     connect_args={"check_same_thread": False}   # needed for Streamlit
 )
 
-# ---------- 5. ORM models (explicit name + extend_existing) ----------
+# ---------- 5. ORM models (rerun‑safe) ----------
 class Transaction(SQLModel, table=True):
     __tablename__  = "transaction"
     __table_args__ = {"extend_existing": True}
@@ -251,7 +259,7 @@ def main():
             if Path(p).exists():
                 Path(p).unlink()
         init_db()
-        st.experimental_rerun()
+        _safe_rerun()
 
     # bootstrap
     init_db()
@@ -266,7 +274,7 @@ def main():
             ok, msg = train_model()
             (st.success if ok else st.error)(msg)
             if ok:
-                st.experimental_rerun()
+                _safe_rerun()
         return
 
     # ---- Prediction UI ----
