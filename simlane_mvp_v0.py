@@ -230,7 +230,7 @@ def train_model():
 
 def main():
     # Dev reset
-    if st.sidebar.button("Reset DB (dev)"'):
+    if st.sidebar.button("Reset DB (dev)"):
         if Path("simlane.db").exists(): Path("simlane.db").unlink()
         init_db(); st.success("Resetting..."); st.experimental_rerun()
 
