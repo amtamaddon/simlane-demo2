@@ -153,7 +153,10 @@ def main():
             Path("simlane.db").unlink()
         init_db()
         st.success("Database reset – reloading app …")
-        st.experimental_rerun()
+        try:
+            st.experimental_rerun()
+        except AttributeError:
+            st.rerun()
 
     # Original CSS, titles, and tab UI remain the same
     # Paste the remainder of your main() as-is …
