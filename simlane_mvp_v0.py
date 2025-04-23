@@ -90,18 +90,16 @@ class Opportunity(SQLModel, table=True):
     competitor_price: Optional[float]
 
 # 5) Initialize DB
-
 def init_db():
     SQLModel.metadata.create_all(engine)
 
 # 6) Bulk insert helper (upsert via merge to avoid IntegrityError)
-
 def bulk_insert_dataframe(df: pd.DataFrame, model):
     from sqlalchemy.exc import SQLAlchemyError
     with Session(engine) as session:
         for _, row in df.iterrows():
             obj = model(**row)
-            session.merge(obj)  # upsert: insert new or update existing
+            session.merge(obj)
         try:
             session.commit()
         except SQLAlchemyError as e:
@@ -109,10 +107,8 @@ def bulk_insert_dataframe(df: pd.DataFrame, model):
             st.warning(f"Ignoring data load error: {e}")
 
 # 7) Load sample data
-
 def load_sample_data():
     with Session(engine) as session:
-        # quick existence check
         if any([
             session.exec(select(Transaction).limit(1)).first(),
             session.exec(select(PricingLog).limit(1)).first(),
@@ -120,18 +116,14 @@ def load_sample_data():
             session.exec(select(Opportunity).limit(1)).first(),
         ]):
             return False
-
-    # transactions CSV
     tx_csv = """
 transaction_id,customer_id,product_id,date,quantity,revenue
 T1001,C101,P201,2024-01-15,2,4000
 ... (trimmed for brevity) ...
 """
     df_tx = pd.read_csv(io.StringIO(tx_csv))
-    # drop any malformed rows missing keys
     df_tx.dropna(subset=["transaction_id","customer_id","product_id"], inplace=True)
     bulk_insert_dataframe(df_tx, Transaction)
-    # pricing CSV
     pr_csv = """
 pricing_id,date,product_id,list_price,discount,final_price
 PL1001,2024-01-01,P201,2200,10,2000
@@ -140,7 +132,6 @@ PL1001,2024-01-01,P201,2200,10,2000
     df_pr = pd.read_csv(io.StringIO(pr_csv))
     df_pr.dropna(subset=["pricing_id","product_id"], inplace=True)
     bulk_insert_dataframe(df_pr, PricingLog)
-    # competitor CSV
     cp_csv = """
 competitor_id,competitor_name,product_id,price,date
 CP1001,CompetitorA,P201,2100,2024-01-01
@@ -149,7 +140,6 @@ CP1001,CompetitorA,P201,2100,2024-01-01
     df_cp = pd.read_csv(io.StringIO(cp_csv))
     df_cp.dropna(subset=["competitor_id","competitor_name"], inplace=True)
     bulk_insert_dataframe(df_cp, CompetitorPrice)
-    # opportunity CSV
     op_csv = """
 opp_id,customer_id,stage_entered_at,stage_exited_at,amount,discount_pct,list_price,cost_price,outcome,industry,competitor_name,competitor_price
 OPP1001,C101,2024-01-01,2024-01-15,12000,5,1000,600,WON,Technology,CompetitorA,950
@@ -158,22 +148,15 @@ OPP1001,C101,2024-01-01,2024-01-15,12000,5,1000,600,WON,Technology,CompetitorA,9
     df_op = pd.read_csv(io.StringIO(op_csv))
     df_op.dropna(subset=["opp_id","customer_id"], inplace=True)
     bulk_insert_dataframe(df_op, Opportunity)
-
     st.success("Sample data loaded successfully!")
     return True
 
 # 8) Feature engineering & model functions
-
 def calculate_customer_metrics(cid):
     with Session(engine) as s:
         tx = s.exec(select(Transaction).where(Transaction.customer_id==cid)).all()
     spent = sum(t.revenue or 0 for t in tx)
-    return {
-        "total_spent": spent,
-        "avg_order_value": spent/len(tx) if tx else 0,
-        "order_count": len(tx),
-        "days_since_last_purchase": 30
-    }
+    return {"total_spent": spent, "avg_order_value": spent/len(tx) if tx else 0, "order_count": len(tx), "days_since_last_purchase": 30}
 
 def calculate_price_gap(lp, cp):
     if not cp: return 0
@@ -187,75 +170,98 @@ def calculate_sales_cycle(start, end):
     except:
         return 30
 
-
 def enrich_opps(df):
     rows=[]
-    for _,r in df.iterrows():
+    for _, r in df.iterrows():
         if pd.isna(r.customer_id): continue
         f={
-            "opp_id":r.opp_id,
-            "amount":r.amount,
-            "discount_pct":r.discount_pct or 0,
-            "industry":r.industry or "other",
-            "outcome":1 if r.outcome=="WON" else 0,
-            "sales_cycle_days":calculate_sales_cycle(r.stage_entered_at,r.stage_exited_at)
+            "opp_id": r.opp_id,
+            "amount": r.amount,
+            "discount_pct": r.discount_pct or 0,
+            "industry": r.industry or "other",
+            "outcome": 1 if r.outcome=="WON" else 0,
+            "sales_cycle_days": calculate_sales_cycle(r.stage_entered_at, r.stage_exited_at),
         }
-        cm=calculate_customer_metrics(r.customer_id)
+        cm = calculate_customer_metrics(r.customer_id)
         f.update(cm)
         f["price_gap_pct"] = calculate_price_gap(
             r.list_price * (1 - (f["discount_pct"]/100)),
-            r.competitor_price
+            r.competitor_price,
         )
         rows.append(f)
     return pd.DataFrame(rows)
 
-MODEL=None; EXPLAINER=None
+MODEL=None
+EXPLAINER=None
 
 def load_model():
     global MODEL, EXPLAINER
     try:
-        with open("simlane_model.pkl","rb") as f: MODEL=pickle.load(f)
+        with open("simlane_model.pkl","rb") as f:
+            MODEL = pickle.load(f)
         return True
     except:
-        MODEL=None
+        MODEL = None
         return False
-
 
 def train_model():
     with Session(engine) as s:
-        ops=s.exec(select(Opportunity)).all()
-    df=pd.DataFrame([o.dict() for o in ops])
-    ed=enrich_opps(df)
-    if ed.empty: return False, "No data"
-    X=ed.drop(["opp_id","outcome"],axis=1);
-    y=ed.outcome
-    num_feats=[c for c in X if X[c].dtype in [np.int64,np.float64]]
-    cat_feats=["industry"]
-    pre=ColumnTransformer([
-        ("num", Pipeline([('imputer',SimpleImputer()),('scale',StandardScaler())]),num_feats),
-        ('cat',Pipeline([('imputer',SimpleImputer('constant','unk')),('ohe',OneHotEncoder())]),cat_feats)
+        ops = s.exec(select(Opportunity)).all()
+    df = pd.DataFrame([o.dict() for o in ops])
+    ed = enrich_opps(df)
+    if ed.empty:
+        return False, "No data"
+    X = ed.drop(["opp_id","outcome"], axis=1)
+    y = ed.outcome
+    num_feats = [c for c in X if X[c].dtype in [np.int64, np.float64]]
+    cat_feats = ["industry"]
+    pre = ColumnTransformer([
+        (
+            "num",
+            Pipeline([("imputer", SimpleImputer()), ("scale", StandardScaler())]),
+            num_feats,
+        ),
+        (
+            "cat",
+            Pipeline([(
+                "imputer",
+                SimpleImputer(strategy="constant", fill_value="unk"),
+            ), ("ohe", OneHotEncoder())]),
+            cat_feats,
+        ),
     ])
-    pipe=Pipeline([('pre',pre),('clf',LGBMClassifier())])
-    pipe.fit(X,y)
-    with open("simlane_model.pkl","wb") as f: pickle.dump(pipe,f)
-    global MODEL; MODEL=pipe
-    return True,"Trained"
+    pipe = Pipeline([("pre", pre), ("clf", LGBMClassifier())])
+    pipe.fit(X, y)
+    with open("simlane_model.pkl", "wb") as f:
+        pickle.dump(pipe, f)
+    MODEL = pipe
+    return True, "Trained"
 
 # 9) UI code
-
 def main():
     # Dev reset
     if st.sidebar.button("Reset DB (dev)"):
-        if Path("simlane.db").exists(): Path("simlane.db").unlink()
-        init_db(); st.success("Resetting..."); st.experimental_rerun()
+        if Path("simlane.db").exists():
+            Path("simlane.db").unlink()
+        init_db()
+        st.success("Resetting...")
+        try:
+            st.experimental_rerun()
+        except AttributeError:
+            st.rerun()
 
     init_db()
-    load_sample_data(); ml=load_model()
+    load_sample_data()
+    ml = load_model()
+
     st.title("Simlane Sales Prediction System")
     st.write("Model loaded?", ml)
+
     if not ml:
-        if st.button("Train Model"): st.write(train_model())
+        if st.button("Train Model"):
+            st.write(train_model())
     else:
         st.write("Ready to predict")
 
-if __name__=='__main__': main()
+if __name__ == '__main__':
+    main()
