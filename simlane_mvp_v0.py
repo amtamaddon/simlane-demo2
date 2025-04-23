@@ -202,7 +202,10 @@ def enrich_opps(df):
         }
         cm=calculate_customer_metrics(r.customer_id)
         f.update(cm)
-        f["price_gap_pct"]=calculate_price_gap(r.list_price*(1-f.discount_pct/100), r.competitor_price)
+        f["price_gap_pct"] = calculate_price_gap(
+            r.list_price * (1 - (f["discount_pct"]/100)),
+            r.competitor_price
+        )
         rows.append(f)
     return pd.DataFrame(rows)
 
