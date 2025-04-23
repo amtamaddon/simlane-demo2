@@ -1,70 +1,90 @@
 # ------------------------------------------------------------
-# Simlane MVP – v1.3  (robust enrich_opportunities + guard)
-# ------------------------------------------------------------
-#  ▶ Run:  streamlit run simlane_app.py
+# Simlane MVP – v1.4
+#   • explicit __tablename__ + extend_existing   (rerun‑safe)
+#   • robust enrich_opportunities & prediction UI
 # ------------------------------------------------------------
 
-# ---------- 1.  Page config ----------
+# ---------- 1. Streamlit page config ----------
 import streamlit as st
 st.set_page_config(page_title="Simlane Sales Prediction",
-                   page_icon="📊", layout="wide",
+                   page_icon="📊",
+                   layout="wide",
                    initial_sidebar_state="expanded")
 
-# ---------- 2.  Core libraries ----------
-import os, io, pickle, datetime
+# ---------- 2. Standard libs ----------
+import io, pickle, datetime
 from pathlib import Path
 from typing import Optional, List
 
+# ---------- 3. Data / ML stack ----------
 import pandas as pd
 import numpy as np
 from lightgbm import LGBMClassifier
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 try:
     import shap
 except Exception:
-    shap = None         # SHAP is optional
+    shap = None          # shap is optional – large dependency
 
+# ---------- 4. SQLModel / SQLAlchemy ----------
 from sqlmodel import Field, SQLModel, create_engine, Session, select
 
-# ---------- 3.  Database ----------
 DB_PATH      = "simlane.db"
 DATABASE_URL = f"sqlite:///{DB_PATH}"
-engine = create_engine(DATABASE_URL, echo=False,
-                       connect_args={"check_same_thread": False})
+engine = create_engine(
+    DATABASE_URL,
+    echo=False,
+    connect_args={"check_same_thread": False}   # needed for Streamlit
+)
 
-# ---------- 4.  ORM models ----------
+# ---------- 5. ORM models (explicit name + extend_existing) ----------
 class Transaction(SQLModel, table=True):
+    __tablename__  = "transaction"
+    __table_args__ = {"extend_existing": True}
+
     transaction_id: str = Field(primary_key=True)
-    customer_id: str
-    product_id: str
-    date: Optional[str]
-    quantity: Optional[int]
-    revenue: Optional[float]
+    customer_id:   str
+    product_id:    str
+    date:          Optional[str]
+    quantity:      Optional[int]
+    revenue:       Optional[float]
+
 
 class PricingLog(SQLModel, table=True):
+    __tablename__  = "pricing_log"
+    __table_args__ = {"extend_existing": True}
+
     pricing_id: str = Field(primary_key=True)
-    date: Optional[str]
+    date:       Optional[str]
     product_id: str
     list_price: Optional[float]
-    discount: Optional[float]
-    final_price: Optional[float]
+    discount:   Optional[float]
+    final_price:Optional[float]
+
 
 class CompetitorPrice(SQLModel, table=True):
+    __tablename__  = "competitor_price"
+    __table_args__ = {"extend_existing": True}
+
     competitor_id: str = Field(primary_key=True)
     competitor_name: str
     product_id: str
     price: Optional[float]
-    date: Optional[str]
+    date:  Optional[str]
+
 
 class Opportunity(SQLModel, table=True):
+    __tablename__  = "opportunity"
+    __table_args__ = {"extend_existing": True}
+
     opp_id: str = Field(primary_key=True)
     customer_id: str
     stage_entered_at: Optional[str]
-    stage_exited_at: Optional[str]
+    stage_exited_at:  Optional[str]
     amount: Optional[float]
     discount_pct: Optional[float] = 0.0
     list_price: Optional[float]
@@ -74,21 +94,22 @@ class Opportunity(SQLModel, table=True):
     competitor_name: Optional[str]
     competitor_price: Optional[float]
 
-def init_db() -> None:
+
+def init_db():
     SQLModel.metadata.create_all(engine)
 
-# ---------- 5.  Helpers ----------
+# ---------- 6.  Helpers ----------
 def _safe(series: pd.Series) -> dict:
-    """replace NaN with None before ORM insert"""
+    """Replace pandas NaN/NaT by None before ORM insert."""
     return {k: (None if pd.isna(v) else v) for k, v in series.items()}
 
 def bulk_insert(df: pd.DataFrame, model):
     with Session(engine) as s:
         for _, row in df.iterrows():
-            s.merge(model(**_safe(row)))
+            s.merge(model(**_safe(row)))   # upsert
         s.commit()
 
-# ---------- 6.  Demo CSV data (tiny) ----------
+# ---------- 7.  Tiny demo CSV literals ----------
 TX_CSV = """
 transaction_id,customer_id,product_id,date,quantity,revenue
 T1001,C101,P201,2024-01-15,2,4000
@@ -114,36 +135,36 @@ OPP1002,C102,2024-02-15,2024-03-03,8000,10,1600,900,LOST,Healthcare,CompetitorB,
 OPP1003,C101,2024-03-10,2024-03-25,10000,0,1700,1000,WON,Technology,CompetitorC,1500
 """
 
-def load_sample_data():
+def load_sample():
     with Session(engine) as s:
         if s.exec(select(Opportunity).limit(1)).first():
-            return           # already loaded
-    bulk_insert(pd.read_csv(io.StringIO(TX_CSV.strip())),  Transaction)
-    bulk_insert(pd.read_csv(io.StringIO(PR_CSV.strip())),  PricingLog)
-    bulk_insert(pd.read_csv(io.StringIO(CP_CSV.strip())),  CompetitorPrice)
+            return
+    bulk_insert(pd.read_csv(io.StringIO(TX_CSV.strip())), Transaction)
+    bulk_insert(pd.read_csv(io.StringIO(PR_CSV.strip())), PricingLog)
+    bulk_insert(pd.read_csv(io.StringIO(CP_CSV.strip())), CompetitorPrice)
     bulk_insert(pd.read_csv(io.StringIO(OPP_CSV.strip())), Opportunity)
     st.success("Sample data inserted.")
 
-# ---------- 7.  Feature engineering ----------
+# ---------- 8.  Feature engineering ----------
 def customer_metrics(cid):
     with Session(engine) as s:
-        tx = s.exec(select(Transaction).where(Transaction.customer_id == cid)).all()
-    total = sum(t.revenue or 0 for t in tx)
-    count = len(tx)
-    last  = max([t.date for t in tx if t.date] or ["1970-01-01"])
+        txs = s.exec(select(Transaction).where(Transaction.customer_id == cid)).all()
+    total = sum(t.revenue or 0 for t in txs)
+    cnt   = len(txs)
+    last  = max([t.date for t in txs if t.date] or ["1970-01-01"])
     delta = (datetime.datetime.utcnow() -
              datetime.datetime.strptime(last, "%Y-%m-%d")).days
     return {
         "total_spent": total,
-        "avg_order_value": total / count if count else 0,
-        "order_count": count,
+        "avg_order_value": total / cnt if cnt else 0,
+        "order_count": cnt,
         "days_since_last_purchase": delta,
     }
 
-def price_gap(lst_price, comp_price):
-    if not comp_price or comp_price == 0:
+def price_gap(lp, cp):
+    if not cp or cp == 0:
         return 0.0
-    return (lst_price - comp_price) / comp_price * 100
+    return (lp - cp) / cp * 100
 
 def sales_cycle(start, end):
     try:
@@ -160,7 +181,7 @@ def enrich_opportunities(df: pd.DataFrame) -> pd.DataFrame:
         feat = {
             "opp_id": r.opp_id,
             "amount": r.amount,
-            "discount_pct": r.discount_pct or 0.0,
+            "discount_pct": r.discount_pct or 0,
             "industry": r.industry or "other",
             "outcome": 1 if str(r.outcome).upper() == "WON" else 0,
             "sales_cycle_days": sales_cycle(r.stage_entered_at, r.stage_exited_at),
@@ -169,11 +190,9 @@ def enrich_opportunities(df: pd.DataFrame) -> pd.DataFrame:
         final_price = r.list_price * (1 - feat["discount_pct"] / 100)
         feat["price_gap_pct"] = price_gap(final_price, r.competitor_price)
         rows.append(feat)
+    return pd.DataFrame(rows)          # always a DataFrame
 
-    # --- IMPORTANT: always return a DataFrame (even if empty) ---
-    return pd.DataFrame(rows)
-
-# ---------- 8.  Model I/O ----------
+# ---------- 9.  Model I/O ----------
 MODEL_F = "simlane_model.pkl"
 MODEL   = None
 
@@ -186,16 +205,16 @@ def load_model() -> bool:
 
 def train_model():
     with Session(engine) as s:
-        rows = s.exec(select(Opportunity)).all()
-    df_raw = pd.DataFrame([o.dict() for o in rows])
+        opps = s.exec(select(Opportunity)).all()
+    df_raw = pd.DataFrame([o.dict() for o in opps])
     df     = enrich_opportunities(df_raw)
     if df.empty:
         return False, "No data."
     X = df.drop(columns=["opp_id", "outcome"])
     y = df["outcome"]
-
     num = [c for c in X if X[c].dtype in [np.int64, np.float64]]
     cat = ["industry"]
+
     pre = ColumnTransformer([
         ("num", Pipeline([("imp", SimpleImputer()), ("sc", StandardScaler())]), num),
         ("cat", Pipeline([
@@ -210,24 +229,21 @@ def train_model():
     MODEL = pipe
     return True, "Model trained."
 
-# ---------- 9.  Prediction helper ----------
-def get_scored_opps() -> pd.DataFrame:
+# ---------- 10. Prediction helper ----------
+def scored_opps() -> pd.DataFrame:
     with Session(engine) as s:
         opps = s.exec(select(Opportunity)).all()
     raw   = pd.DataFrame([o.dict() for o in opps])
     feats = enrich_opportunities(raw)
-
-    # defensive guard: wrong type OR empty
     if not isinstance(feats, pd.DataFrame) or feats.empty:
         return pd.DataFrame()
-
-    X      = feats.drop(columns=["opp_id", "outcome"])
-    feats  = feats.copy()
+    X = feats.drop(columns=["opp_id", "outcome"])
+    feats = feats.copy()
     feats["prob_win"] = MODEL.predict_proba(X)[:, 1]
     feats.rename(columns={"outcome": "actual"}, inplace=True)
     return feats
 
-# ---------- 10.  Streamlit UI ----------
+# ---------- 11. Streamlit UI ----------
 def main():
     # dev‑reset
     if st.sidebar.button("🗑️ Reset DB & model"):
@@ -239,7 +255,7 @@ def main():
 
     # bootstrap
     init_db()
-    load_sample_data()
+    load_sample()
     mdl_loaded = load_model()
 
     st.title("Simlane Sales Prediction System")
@@ -255,26 +271,27 @@ def main():
 
     # ---- Prediction UI ----
     st.header("Opportunity win‑probabilities")
-    df_pred = get_scored_opps()
-    if df_pred.empty:
-        st.warning("No opportunity data available.")
+    df = scored_opps()
+    if df.empty:
+        st.warning("No opportunities found.")
         return
 
     thresh = st.slider("Probability threshold for WIN", 0.0, 1.0, 0.50, 0.05)
-    df_pred["predicted"] = np.where(df_pred["prob_win"] >= thresh, "WON", "LOST")
+    df["predicted"] = np.where(df["prob_win"] >= thresh, "WON", "LOST")
+    st.dataframe(
+        df[["opp_id", "prob_win", "predicted", "actual",
+            "amount", "industry", "sales_cycle_days"]]
+        .style.format({"prob_win": "{:.1%}"})
+    )
 
-    st.dataframe(df_pred[["opp_id", "prob_win", "predicted", "actual",
-                          "amount", "industry", "sales_cycle_days"]]
-                 .style.format({"prob_win": "{:.1%}"}))
-
-    # ---- optional SHAP ----
+    # ---- optional SHAP explanation ----
     st.subheader("Explain a single prediction")
     if shap is None:
-        st.info("Install `shap` to enable explanations.")
+        st.info("Install the `shap` package to enable explanations.")
     else:
-        sel = st.selectbox("Select opportunity", df_pred["opp_id"])
-        if sel:
-            row = df_pred[df_pred["opp_id"] == sel]
+        opp_id = st.selectbox("Select opportunity", df["opp_id"])
+        if opp_id:
+            row = df[df["opp_id"] == opp_id]
             Xr  = row.drop(columns=["opp_id", "actual", "prob_win", "predicted"])
             explainer = shap.Explainer(MODEL["clf"])
             sv = explainer(MODEL["pre"].transform(Xr))
@@ -282,6 +299,6 @@ def main():
             shap.plots.waterfall(sv[0], show=False)
             st.pyplot(bbox_inches="tight")
 
-# ---------- 11.  run ----------
+# ---------- 12. Run ----------
 if __name__ == "__main__":
     main()
