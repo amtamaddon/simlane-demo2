@@ -94,12 +94,19 @@ class Opportunity(SQLModel, table=True):
 def init_db():
     SQLModel.metadata.create_all(engine)
 
-# 6) Bulk insert helper
+# 6) Bulk insert helper (upsert via merge to avoid IntegrityError)
 
 def bulk_insert_dataframe(df: pd.DataFrame, model):
+    from sqlalchemy.exc import SQLAlchemyError
     with Session(engine) as session:
-        session.bulk_save_objects([model(**row) for _, row in df.iterrows()])
-        session.commit()
+        for _, row in df.iterrows():
+            obj = model(**row)
+            session.merge(obj)  # upsert: insert new or update existing
+        try:
+            session.commit()
+        except SQLAlchemyError as e:
+            session.rollback()
+            st.warning(f"Ignoring data load error: {e}")
 
 # 7) Load sample data
 
