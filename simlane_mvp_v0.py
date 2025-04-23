@@ -159,7 +159,85 @@ def main():
             st.rerun()
 
     # Original CSS, titles, and tab UI remain the same
-    # Paste the remainder of your main() as-is …
+        # ---- Main App UI & Logic ----
+    # Custom CSS for styling
+    st.markdown("""
+    <style>
+    .metric-card {
+        background-color: #f8f9fa;
+        border-radius: 5px;
+        padding: 15px;
+        box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
+    }
+    .big-number {
+        font-size: 32px;
+        font-weight: bold;
+        color: #1f77b4;
+    }
+    .card-title {
+        font-size: 14px;
+        color: #666;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 24px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        white-space: pre-wrap;
+        border-radius: 4px 4px 0px 0px;
+        padding: 0px 16px;
+        font-size: 16px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.title("Simlane Sales Prediction System")
+
+    # Initialize and load data/model
+    init_db()
+    data_loaded = load_sample_data()
+    model_loaded = load_model()
+    model_status = "✅ Model loaded" if model_loaded else "❌ No trained model found"
+
+    if data_loaded and not model_loaded:
+        with st.spinner("Training initial model with sample data..."):
+            success, message = train_lightgbm_model()
+            if success:
+                st.success(message)
+                model_loaded = True
+
+    # Setup tabs
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "🧑‍💼 Account Executive",
+        "👨‍💼 Sales Manager",
+        "📈 RevOps / CRO",
+        "⚙️ Setup & Configuration"
+    ])
+
+    # -- Tab 1: Account Executive --
+    with tab1:
+        st.header("Deal Assessment")
+        st.write("Analyze a specific opportunity to determine win probability and optimal pricing.")
+        # ... include the entire input form, analysis logic, and charts from your original code here ...
+
+    # -- Tab 2: Sales Manager --
+    with tab2:
+        st.header("Deal Desk Queue")
+        st.write("Focus your coaching on high-value deals with significant margin opportunity.")
+        # ... include your prioritization table and scenario analysis UI ...
+
+    # -- Tab 3: RevOps / CRO --
+    with tab3:
+        st.header("Performance Analytics")
+        st.write("Measure the impact of the Simlane system on your sales performance.")
+        # ... include performance charts, metrics, lift report, export options ...
+
+    # -- Tab 4: Setup & Configuration --
+    with tab4:
+        st.header("Setup & Configuration")
+        st.write("Manage your data tables, uploads, and model training settings.")
+        # ... include your data display tabs and upload/train buttons ...
+
 
 if __name__ == "__main__":
     init_db()
