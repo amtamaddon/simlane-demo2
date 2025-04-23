@@ -1,10 +1,9 @@
-# Simlane MVP – v1 (complete)
+# Simlane MVP – v1.1
 # --------------------------------------------------------
-# Fixes:
-# - SQLite `check_same_thread=False`
-# - `extend_existing` & explicit `__tablename__` to avoid metadata collisions
-# - Dev-reset button with robust rerun
-# - Full model and UI code included
+# PATCHES 2024‑04‑23
+# • NaN→None before ORM insert
+# • One LOST row in sample data
+# • Two‑class guard in train_model()
 # --------------------------------------------------------
 
 import streamlit as st
@@ -94,11 +93,15 @@ def init_db():
     SQLModel.metadata.create_all(engine)
 
 # 6) Bulk insert helper (upsert via merge to avoid IntegrityError)
+############ PATCH 1: convert NaN to None ############
+def _safe_dict(row: pd.Series) -> dict:
+    return {k: (None if pd.isna(v) else v) for k, v in row.items()}
+
 def bulk_insert_dataframe(df: pd.DataFrame, model):
     from sqlalchemy.exc import SQLAlchemyError
     with Session(engine) as session:
         for _, row in df.iterrows():
-            obj = model(**row)
+            obj = model(**_safe_dict(row))
             session.merge(obj)
         try:
             session.commit()
@@ -119,43 +122,37 @@ def load_sample_data():
     tx_csv = """
 transaction_id,customer_id,product_id,date,quantity,revenue
 T1001,C101,P201,2024-01-15,2,4000
-... (trimmed for brevity) ...
 """
     df_tx = pd.read_csv(io.StringIO(tx_csv))
-    # drop placeholder rows
-    df_tx = df_tx[~df_tx['transaction_id'].astype(str).str.contains('trimmed')]
     df_tx.dropna(subset=["transaction_id","customer_id","product_id"], inplace=True)
     bulk_insert_dataframe(df_tx, Transaction)
+
     pr_csv = """
 pricing_id,date,product_id,list_price,discount,final_price
 PL1001,2024-01-01,P201,2200,10,2000
-... (trimmed) ...
 """
     df_pr = pd.read_csv(io.StringIO(pr_csv))
-    # drop placeholder rows
-    df_pr = df_pr[~df_pr['pricing_id'].astype(str).str.contains('trimmed')]
     df_pr.dropna(subset=["pricing_id","product_id"], inplace=True)
     bulk_insert_dataframe(df_pr, PricingLog)
+
     cp_csv = """
 competitor_id,competitor_name,product_id,price,date
 CP1001,CompetitorA,P201,2100,2024-01-01
-... (trimmed) ...
 """
     df_cp = pd.read_csv(io.StringIO(cp_csv))
-    # drop placeholder rows
-    df_cp = df_cp[~df_cp['competitor_id'].astype(str).str.contains('trimmed')]
     df_cp.dropna(subset=["competitor_id","competitor_name"], inplace=True)
     bulk_insert_dataframe(df_cp, CompetitorPrice)
+
+    ############ PATCH 2: WON + LOST rows ############
     op_csv = """
 opp_id,customer_id,stage_entered_at,stage_exited_at,amount,discount_pct,list_price,cost_price,outcome,industry,competitor_name,competitor_price
 OPP1001,C101,2024-01-01,2024-01-15,12000,5,1000,600,WON,Technology,CompetitorA,950
-... (trimmed) ...
+OPP1002,C102,2024-02-01,2024-02-20, 8500,7, 900,540,LOST,Healthcare,CompetitorB,880
 """
     df_op = pd.read_csv(io.StringIO(op_csv))
-    # drop placeholder rows
-    df_op = df_op[~df_op['opp_id'].astype(str).str.contains('trimmed')]
     df_op.dropna(subset=["opp_id","customer_id"], inplace=True)
     bulk_insert_dataframe(df_op, Opportunity)
+
     st.success("Sample data loaded successfully!")
     return True
 
@@ -200,10 +197,9 @@ def enrich_opps(df):
     return pd.DataFrame(rows)
 
 MODEL=None
-EXPLAINER=None
 
 def load_model():
-    global MODEL, EXPLAINER
+    global MODEL
     try:
         with open("simlane_model.pkl","rb") as f:
             MODEL = pickle.load(f)
@@ -217,8 +213,11 @@ def train_model():
         ops = s.exec(select(Opportunity)).all()
     df = pd.DataFrame([o.dict() for o in ops])
     ed = enrich_opps(df)
-    if ed.empty:
-        return False, "No data"
+
+    ############ PATCH 3: two‑class guard ############
+    if ed.empty or ed.outcome.nunique() < 2:
+        return False, "Training aborted: need at least one WON and one LOST opportunity."
+
     X = ed.drop(["opp_id","outcome"], axis=1)
     y = ed.outcome
     num_feats = [c for c in X if X[c].dtype in [np.int64, np.float64]]
@@ -242,8 +241,7 @@ def train_model():
     pipe.fit(X, y)
     with open("simlane_model.pkl", "wb") as f:
         pickle.dump(pipe, f)
-    MODEL = pipe
-    return True, "Trained"
+    return True, "Model trained successfully!"
 
 # 9) UI code
 def main():
@@ -254,22 +252,25 @@ def main():
         init_db()
         st.success("Resetting...")
         try:
-            st.experimental_rerun()
-        except AttributeError:
             st.rerun()
+        except AttributeError:
+            st.experimental_rerun()
 
     init_db()
     load_sample_data()
-    ml = load_model()
+    ml_loaded = load_model()
 
     st.title("Simlane Sales Prediction System")
-    st.write("Model loaded?", ml)
+    st.write("Model loaded?", ml_loaded)
 
-    if not ml:
+    if not ml_loaded:
         if st.button("Train Model"):
-            st.write(train_model())
+            ok,msg = train_model()
+            st.toast(msg if ok else f"❗ {msg}")
+            if ok:
+                st.rerun()
     else:
-        st.write("Ready to predict")
+        st.success("Ready to predict!")
 
 if __name__ == '__main__':
     main()
