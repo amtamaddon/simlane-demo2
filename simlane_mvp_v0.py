@@ -122,6 +122,8 @@ T1001,C101,P201,2024-01-15,2,4000
 ... (trimmed for brevity) ...
 """
     df_tx = pd.read_csv(io.StringIO(tx_csv))
+    # drop placeholder rows
+    df_tx = df_tx[~df_tx['transaction_id'].astype(str).str.contains('trimmed')]
     df_tx.dropna(subset=["transaction_id","customer_id","product_id"], inplace=True)
     bulk_insert_dataframe(df_tx, Transaction)
     pr_csv = """
@@ -130,6 +132,8 @@ PL1001,2024-01-01,P201,2200,10,2000
 ... (trimmed) ...
 """
     df_pr = pd.read_csv(io.StringIO(pr_csv))
+    # drop placeholder rows
+    df_pr = df_pr[~df_pr['pricing_id'].astype(str).str.contains('trimmed')]
     df_pr.dropna(subset=["pricing_id","product_id"], inplace=True)
     bulk_insert_dataframe(df_pr, PricingLog)
     cp_csv = """
@@ -138,6 +142,8 @@ CP1001,CompetitorA,P201,2100,2024-01-01
 ... (trimmed) ...
 """
     df_cp = pd.read_csv(io.StringIO(cp_csv))
+    # drop placeholder rows
+    df_cp = df_cp[~df_cp['competitor_id'].astype(str).str.contains('trimmed')]
     df_cp.dropna(subset=["competitor_id","competitor_name"], inplace=True)
     bulk_insert_dataframe(df_cp, CompetitorPrice)
     op_csv = """
@@ -146,6 +152,8 @@ OPP1001,C101,2024-01-01,2024-01-15,12000,5,1000,600,WON,Technology,CompetitorA,9
 ... (trimmed) ...
 """
     df_op = pd.read_csv(io.StringIO(op_csv))
+    # drop placeholder rows
+    df_op = df_op[~df_op['opp_id'].astype(str).str.contains('trimmed')]
     df_op.dropna(subset=["opp_id","customer_id"], inplace=True)
     bulk_insert_dataframe(df_op, Opportunity)
     st.success("Sample data loaded successfully!")
