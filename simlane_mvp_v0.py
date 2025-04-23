@@ -1,10 +1,12 @@
-# Simlane MVP – v1 with OperationalError fix
+# Simlane MVP – v1 with OperationalError & InvalidRequestError fixes
 # --------------------------------------------------------
 # Key changes vs. previous version
 # 1) Engine uses `check_same_thread=False` to avoid SQLite lock issues.
 # 2) `load_sample_data()` queries use LIMIT 1 instead of loading full tables.
-# 3) Optional sidebar button to hard‑reset the database during dev so the
+# 3) Optional sidebar button to hard-reset the database during dev so the
 #    schema always matches the SQLModel definitions (handy after column adds).
+# 4) Each SQLModel class now declares `__tablename__` + `__table_args__ = {"extend_existing": True}`
+#    to avoid `InvalidRequestError` when redeploying against an existing schema.
 # --------------------------------------------------------
 
 # Set page configuration – must be first Streamlit command
@@ -16,13 +18,13 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Built‑ins / stdlib
+# Built-ins / stdlib
 import os, io, pickle, datetime, uuid, sys
 from datetime import timedelta
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple, Any
 
-# Third‑party libs
+# Third-party libs
 import pandas as pd
 import numpy as np
 from lightgbm import LGBMClassifier
@@ -42,7 +44,7 @@ from sqlmodel import Field, SQLModel, create_engine, Session, select
 # Database setup (SQLite)
 # --------------------------------------------------------
 DATABASE_URL = "sqlite:///simlane.db"
-# **IMPORTANT** – allow multi‑threaded access which Streamlit uses
+# **IMPORTANT** – allow multi-threaded access which Streamlit uses
 engine = create_engine(
     DATABASE_URL,
     echo=False,
@@ -56,6 +58,8 @@ SHAP_EXPLAINER_PATH = "simlane_explainer.pkl"
 # ORM table definitions
 # --------------------------------------------------------
 class Transaction(SQLModel, table=True):
+    __tablename__ = "transaction"
+    __table_args__ = {"extend_existing": True}
     transaction_id: str = Field(primary_key=True, nullable=False)
     customer_id: str
     product_id: str
@@ -64,6 +68,8 @@ class Transaction(SQLModel, table=True):
     revenue: Optional[float]
 
 class PricingLog(SQLModel, table=True):
+    __tablename__ = "pricing_log"
+    __table_args__ = {"extend_existing": True}
     pricing_id: str = Field(primary_key=True, nullable=False)
     date: Optional[str]
     product_id: str
@@ -72,6 +78,8 @@ class PricingLog(SQLModel, table=True):
     final_price: Optional[float]
 
 class CompetitorPrice(SQLModel, table=True):
+    __tablename__ = "competitor_price"
+    __table_args__ = {"extend_existing": True}
     competitor_id: str = Field(primary_key=True, nullable=False)
     competitor_name: str
     product_id: str
@@ -79,6 +87,8 @@ class CompetitorPrice(SQLModel, table=True):
     date: Optional[str]
 
 class Opportunity(SQLModel, table=True):
+    __tablename__ = "opportunity"
+    __table_args__ = {"extend_existing": True}
     opp_id: str = Field(primary_key=True, nullable=False)
     customer_id: str
     stage_entered_at: Optional[str]
@@ -107,7 +117,7 @@ def bulk_insert_dataframe(df: pd.DataFrame, model_cls):
         session.commit()
 
 # --------------------------------------------------------
-# Sample‑data loader (unchanged except LIMIT 1 optimisation)
+# Sample-data loader (unchanged except LIMIT 1 optimisation)
 # --------------------------------------------------------
 
 def load_sample_data():
@@ -121,9 +131,8 @@ def load_sample_data():
         if exists:
             return False  # sample already loaded
 
-    # … *** original CSV‑to‑DataFrame blocks remain unchanged below *** …
-    # (omitted here for brevity – paste your full CSV blocks)
-    # After inserts:
+    # … Original CSV-to-DataFrame loading blocks go here …
+    # (Use your previous code for transactions, pricing, competitor, opportunity CSV inserts)
     st.success("Sample data loaded successfully!")
     return True
 
@@ -147,7 +156,7 @@ def main():
         st.experimental_rerun()
 
     # Original CSS, titles, and tab UI remain the same
-    # Paste the remainder of your main() as‑is …
+    # Paste the remainder of your main() as-is …
 
 if __name__ == "__main__":
     init_db()
